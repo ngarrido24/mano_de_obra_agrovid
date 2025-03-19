@@ -16,48 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def final_result(dataset, year, number):
-    try:
-        # Función interna para obtener el primer día de la semana dado el número de semana y año
-        def obtain_first_day_ok_week(week_number, year):
-            try:
-                # Calcular el primer día de la segunda semana del año (7 de enero como referencia)
-                first_day_year = datetime(year, 1, 7)
-                day = (week_number - 2) * 7
-                first_day = first_day_year + timedelta(day + first_day_year.weekday())
-                
-                return first_day
-            except Exception as e:
-                logger.error(f"Error al calcular la fecha para la semana {week_number}: {e}")
-                raise
-        
-        # Obtener una lista con el número de semana en el archivo de volumen
-        weeks = dataset.columns[number:]  # Asume que las columnas relevantes empiezan desde la columna 3
-        week_numbers = [int(i.split()[-1]) for i in weeks]
-      
-        # Convertir el número de semana en fecha
-        dates = [obtain_first_day_ok_week(i, year) for i in week_numbers]
-        logger.info(f"Fechas calculadas para cada semana: {dates}.")
-        
-        # Crear el mapeo de semanas a fechas
-        mapping = dict(zip(weeks, dates))
-        
-        # Renombrar las columnas del dataset basado en el mapeo
-        dataset.rename(mapping, axis=1, inplace=True)
-        logger.info(f"Columnas renombradas exitosamente en el dataset.")
-        
-        return dataset
-
-    except Exception as e:
-        logger.error(f"Error en el proceso de transformación del dataset: {e}")
-        raise
-
-"-------------------------------------------------------------------------------------------------------------------------------------------"
-"-------------------------------------------------------------------------------------------------------------------------------------------"
-"-------------------------------------------------------------------------------------------------------------------------------------------"
-"-------------------------------------------------------------------------------------------------------------------------------------------"
-"-------------------------------------------------------------------------------------------------------------------------------------------"
-"-------------------------------------------------------------------------------------------------------------------------------------------"
+"-reciclada------------------------------------------------------------------------------------------------------------------------------------------"
 
 def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_subset_def, volum_file_emb_transform_def, new_columns_def):
     try:
@@ -90,8 +49,156 @@ def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_
         logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
         raise
 
-"-------------------------------------------------------------------------------------------------"
+"-reciclada------------------------------------------------------------------------------------------------"
 
+def group_by_month(df, df_2):
+    try:
+        # Log the start of the function
+        logging.info("Inicia la función agrupando por mes.")
+
+        # Convert column names to datetime format
+        df.columns = pd.to_datetime(df.columns, errors='coerce')
+
+        # Check if any columns could not be converted
+        if df.columns.isna().any():
+            logging.error("Algunas columnas no pudieron convertirse al formato.")
+            raise ValueError("Algunas columnas no pudieron convertirse al formato fecha. por favor revisar.")
+
+        # Group columns by month and sum values
+        logging.info("agrupando las columnas por mes y sumandolas.")
+        grouped_df = df.groupby(df.columns.to_period('M'), axis=1).sum()
+
+        selected_columns = df_2.iloc[:, 1:3]
+        grouped_df_final = pd.concat([selected_columns, grouped_df], axis=1)
+
+        # Log the successful completion
+        logging.info("Se realizó la agrupación con éxito.")
+        return grouped_df_final
+
+    except Exception as e:
+        # Log the exception with an error level
+        logging.error(f"An error occurred: {e}")
+        raise
+"--reciclada----------------------------------------------------------------------------------------------------------"
+
+import pandas as pd
+import logging
+
+# Configurar logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+def multiply_price(df1, df2, col_1, col_2, col_3, months):
+    """
+    Multiplica los valores mensuales de df1 por la columna 'TARIFA' de df2, asociando por 'FINCA'.
+    
+    Parameters:
+    df1 (DataFrame): DataFrame con los valores mensuales.
+    df2 (DataFrame): DataFrame con la columna 'TARIFA' asociada a cada 'FINCA'.
+    months (list): Lista de columnas que representan los meses a multiplicar.
+
+    Returns:
+    DataFrame: DataFrame con los valores multiplicados.
+    """
+    try:
+        logger.info("Inicia la función para multiplicar los DataFrames.")
+
+        # Convertir los nombres de los meses a strings si son Period
+        months = [str(m) for m in months]
+        df1.columns = df1.columns.astype(str)  # Convertir nombres de columnas a string
+        df2.columns = df2.columns.astype(str)
+
+        # Merge de ambos DataFrames en base a la columna 'FINCA'
+        logger.info("Realizando el merge sobre la columna FINCA")
+        df_merged = pd.merge(df1, df2[[col_1, col_2, col_3]], on=col_1, how='left')
+
+
+        # Verificar que la columna existe después del merge
+        if f"{col_2}" not in df_merged.columns:
+            raise KeyError(f"La columna {col_2} no se encuentra en el DataFrame después del merge.")
+
+        # Multiplicación de cada mes por la TARIFA
+        for month in months:
+            try:
+                df_merged[month] = df_merged[month].astype(float) * df_merged[col_2]
+            except KeyError as e:
+                logger.error(f"Error en la columna {month}: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Error inesperado al procesar la columna {month}: {e}")
+                raise
+
+        # Log de las columnas después de la multiplicación
+        logger.info(f"Columnas posteriores a la multiplicación: {df_merged.columns.tolist()}")
+
+        # Selección de columnas finales sin la columna 'TARIFA'
+        result_df = df_merged[['FINCA', 'PROMEDIADO'] + months]
+
+        logger.info("Proceso completado exitosamente.")
+        return result_df
+
+    except KeyError as e:
+        logger.error(f"KeyError ocurrido: {e}")
+        raise
+    except pd.errors.MergeError as e:
+        logger.error(f"Error durante el merge: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ocurrió un error inesperado: {e}")
+        raise
+
+"---------------------------------------------------------------------------------------------------------"
+def multiply_by_month_promediado(df1, df2, months):
+    try:
+        logger.info("Inicia la función para multiplicar ambos dataframes.")
+
+        # Limpiar espacios en los nombres de columnas
+        df1.columns = df1.columns.str.strip().astype(str)
+        df2.columns = df2.columns.str.strip().astype(str)
+
+        # Asegurar que las columnas de meses sean de tipo string
+        months = [str(month) for month in months]
+
+        # Asegurar que los valores en meses sean numéricos
+        for month in months:
+            df1[month] = pd.to_numeric(df1[month], errors='coerce')
+            df2[month] = pd.to_numeric(df2[month], errors='coerce')
+
+        # Merge basado en 'PROMEDIADO'
+        logger.info("Se realiza el merge sobre la columna PROMEDIADO.")
+        df_merged = pd.merge(df1, df2, on='PROMEDIADO', how='left', suffixes=('_df1', '_df2'))
+
+        # Verificar columnas después del merge
+        logger.info(f"Columnas después del merge: {df_merged.columns.tolist()}")
+
+        # Multiplicar cada mes
+        for month in months:
+            col_df1 = f'{month}_df1'
+            col_df2 = f'{month}_df2'
+
+            if col_df1 in df_merged.columns and col_df2 in df_merged.columns:
+                df_merged[col_df1] = pd.to_numeric(df_merged[col_df1], errors='coerce')
+                df_merged[col_df2] = pd.to_numeric(df_merged[col_df2], errors='coerce')
+
+                df_merged[month] = df_merged[col_df1] * df_merged[col_df2]
+            else:
+                logger.warning(f"No se encontraron columnas {col_df1} o {col_df2} en el DataFrame.")
+
+        # Verificar si 'FINCA' está presente
+        if 'FINCA' in df_merged.columns:
+            result_df = df_merged[['FINCA'] + months]
+        else:
+            logger.warning("La columna 'FINCA' no está en el DataFrame después del merge.")
+            result_df = df_merged[months]
+
+        logger.info("Proceso completado exitosamente")
+        return result_df
+
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}")
+        raise
+
+"-----------------------------------------------------------------------------------------------------------"
 def object_to_dataframe(
     s3_client: S3Client,
     bucket_name: str,
