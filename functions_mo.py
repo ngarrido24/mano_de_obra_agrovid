@@ -301,6 +301,117 @@ def get_item_from_dynamodb_global(table_name: str, partition_key_value: str, log
 
 "-------------------------------------------------------------------------------------------------"
 
+import pandas as pd
+
+def multiply_p_social(df1, df2, df3, col_1, col_2, col_3, months):
+    try:
+        logger.info("Inicia la función sumar los dataframes de labor y promediados.")
+
+        # Convertir los nombres de los meses a strings si son Period
+        months = [str(m) for m in months]
+        df1.columns = df1.columns.astype(str)
+        df2.columns = df2.columns.astype(str)
+
+        # Asegurar que los valores sean numéricos
+        for col in months:
+            df1[col] = pd.to_numeric(df1[col], errors='coerce')
+            df2[col] = pd.to_numeric(df2[col], errors='coerce')
+
+        # Sumar los valores por cada mes
+        df_sum = df1[['FINCA']].copy()  # Crear df_sum con la columna FINCA
+        for col in months:
+            df_sum[col] = df1[col] + df2[col]
+
+        logger.info("Suma realizada con éxito.")
+       
+
+        # Merge de ambos DataFrames en base a la columna 'FINCA'
+        logger.info("Realizando el merge sobre la columna FINCA y PRESTACIONES")
+        df_merged = pd.merge(df_sum, df3[[col_1, col_2, col_3]], on=col_1, how='left')
+
+        # Verificar que la columna existe después del merge
+        if col_2 not in df_merged.columns:
+            raise KeyError(f"La columna {col_2} no se encuentra en el DataFrame después del merge.")
+
+        # Multiplicación de cada mes por la TARIFA
+        for month in months:
+            try:
+                df_merged[month] = df_merged[month].astype(float) * df_merged[col_2]
+            except KeyError as e:
+                logger.error(f"Error en la columna {month}: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Error inesperado al procesar la columna {month}: {e}")
+                raise
+
+        logger.info(f"Columnas posteriores a la multiplicación: {df_merged.columns.tolist()}")
+
+        # Selección de columnas finales sin la columna 'TARIFA'
+        result_df = df_merged[[col_1, col_3] + months]
+
+        logger.info("Proceso completado exitosamente.")
+        return result_df
+
+    except KeyError as e:
+        logger.error(f"KeyError ocurrido: {e}")
+        raise
+    except pd.errors.MergeError as e:
+        logger.error(f"Error durante el merge: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ocurrió un error inesperado: {e}")
+        raise
+
+"-------------------------------------------------------------------------------------------------"
+def total_cost(df1, df2, df3, col_1, col_2, months):
+    try:
+        logger.info("Inicia la función sumar los dataframes de labor y promediados.")
+
+        # Convertir los nombres de los meses a strings si son Period
+        months = [str(m) for m in months]
+        df1.columns = df1.columns.astype(str)
+        df2.columns = df2.columns.astype(str)
+
+        # Asegurar que los valores sean numéricos
+        for col in months:
+            df1[col] = pd.to_numeric(df1[col], errors='coerce')
+            df2[col] = pd.to_numeric(df2[col], errors='coerce')
+
+        # Sumar los valores por cada mes
+        df_sum = df1[['FINCA']].copy()  # Crear df_sum con la columna FINCA
+        for col in months:
+            df_sum[col] = df1[col] + df2[col]+ df3[col]
+
+        logger.info("Suma realizada con éxito.")
+
+        # Merge de ambos DataFrames en base a la columna 'FINCA'
+        logger.info("Realizando el merge sobre la columna FINCA y PRESTACIONES")
+        df_merged = pd.merge(df_sum, df3[[col_1, col_2]], on=col_1, how='left')
+
+        # Verificar que la columna existe después del merge
+        if col_2 not in df_merged.columns:
+            raise KeyError(f"La columna {col_2} no se encuentra en el DataFrame después del merge.")
+
+        
+        # Selección de columnas finales sin la columna 'TARIFA'
+        result_df = df_merged[[col_1, col_2] + months]
+
+        logger.info("Proceso completado exitosamente.")
+        return result_df
+
+    except KeyError as e:
+        logger.error(f"KeyError ocurrido: {e}")
+        raise
+    except pd.errors.MergeError as e:
+        logger.error(f"Error durante el merge: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ocurrió un error inesperado: {e}")
+        raise
+
+
+"-------------------------------------------------------------------------------------------------"
+
 
 def get_item_from_dynamodb(table_name: str, key: dict, logger: Logger, dynamodb_client):
     """
