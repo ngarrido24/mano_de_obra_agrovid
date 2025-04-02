@@ -16,9 +16,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-"-reciclada------------------------------------------------------------------------------------------------------------------------------------------"
 
-def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_subset_def, volum_file_emb_transform_def, new_columns_def):
+def calculate_volume_distribution_factor(
+    volum_file_emb_subset_def,
+    volum_distribution_subset_def,
+    volum_file_emb_transform_def,
+    month_columns,
+    adjustment_factors  # <- nuevo parámetro
+):
     try:
         logger.info("Iniciando el cálculo de la matriz de distribución de volumen.")
 
@@ -27,7 +32,7 @@ def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_
         for month in volum_distribution_subset_def.index:
             logger.info(f"Procesando el mes: {month}")
             monthly_result = []
-            for i in range(46):  # 0 a 44 son 45 elementos
+            for i in range(46):  # 0 a 45 son 46 elementos
                 result = (volum_file_emb_subset_def.iloc[i, :] * volum_distribution_subset_def.iloc[month, :]).sum()
                 monthly_result.append(result)
             final_data.append(monthly_result)
@@ -36,8 +41,12 @@ def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_
         logger.info("Matriz de resultados generada.")
 
         final_data_df_trans = final_data_df.transpose()
-        final_data_df_trans.columns = new_columns_def
+        final_data_df_trans.columns = month_columns
         logger.info("Matriz de resultados transpuesta y columnas renombradas.")
+
+        # Aplicar factores de ajuste (multiplicación fila a fila)
+        final_data_df_trans = final_data_df_trans.multiply(adjustment_factors, axis=0)
+        logger.info("Factores de ajuste aplicados al DataFrame transpuesto.")
 
         volum_concat = volum_file_emb_transform_def[['FINCA', 'CONCEPTO']].reset_index(drop=True)
         volum_data_emb = pd.concat([volum_concat, final_data_df_trans], axis=1)
@@ -49,8 +58,67 @@ def calculate_volume_distribution(volum_file_emb_subset_def, volum_distribution_
         logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
         raise
 
-"-reciclada------------------------------------------------------------------------------------------------"
 
+
+"-------------------------------------------------------------------------------------------------------"
+def calculate_promediados_factor(
+    volum_distribution_subset_def,
+    volum_file_emb_transform_def,
+    month_column,
+    adjustment_factors  # <- debe tener 92 elementos
+):
+    try:
+        logger.info("Iniciando el cálculo de la matriz de distribución de volumen con 92 factores.")
+
+        if len(adjustment_factors) != 92:
+            raise ValueError("La serie de factores debe contener exactamente 92 elementos.")
+
+        final_data = []
+
+        for month in volum_distribution_subset_def.index:
+            logger.info(f"Procesando el mes: {month}")
+            monthly_result = []
+
+            # Primer bloque (0–45)
+            for i in range(46):
+                factor = adjustment_factors[i]
+                result = (factor * volum_distribution_subset_def.iloc[month, :]).sum()
+                monthly_result.append(result)
+
+            # Segundo bloque (46–91)
+            for i in range(46, 92):
+                factor = adjustment_factors[i]
+                result = (factor * volum_distribution_subset_def.iloc[month, :]).sum()
+                monthly_result.append(result)
+
+            final_data.append(monthly_result)
+
+        final_data_df = pd.DataFrame(final_data)  # shape: (n_months, 92)
+        logger.info("Matriz de resultados generada.")
+
+        final_data_df_trans = final_data_df.transpose()  # shape: (92, n_months)
+        final_data_df_trans.columns = month_column
+        logger.info("Matriz de resultados transpuesta y columnas renombradas.")
+
+        volum_concat_base = volum_file_emb_transform_def[['FINCA', 'CONCEPTO']].reset_index(drop=True)
+        volum_concat = pd.concat([volum_concat_base, volum_concat_base], ignore_index=True)
+        volum_data_emb = pd.concat([volum_concat, final_data_df_trans], axis=1)
+        
+        logger.info("DataFrame final concatenado con los datos de volumen transformados.")
+
+        return volum_data_emb
+
+    except Exception as e:
+        logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
+        raise
+
+
+
+
+
+
+
+"---------------------------------------------------------------------------------------------------------"
 def group_by_month(df, df_2):
     try:
         # Log the start of the function
