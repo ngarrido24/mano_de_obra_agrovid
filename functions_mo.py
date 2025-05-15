@@ -391,7 +391,7 @@ def multiply_p_social(df1, df2, df3, col_1, col_2, col_3, months):
             df_sum[col] = df1[col] + df2[col]
 
         logger.info("Suma realizada con éxito.")
-       
+        
 
         # Merge de ambos DataFrames en base a la columna 'FINCA'
         logger.info("Realizando el merge sobre la columna FINCA y PRESTACIONES")
