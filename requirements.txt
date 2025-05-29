@@ -10,3 +10,4 @@ ipykernel==6.29.5
 mypy-boto3-dynamodb==1.37.12
 mypy-boto3-s3==1.37.0
 chalice==1.31.4
+unidecode==1.4.0

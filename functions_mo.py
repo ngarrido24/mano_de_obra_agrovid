@@ -8,6 +8,7 @@ from mypy_boto3_s3.client import S3Client
 from chalice import Chalice
 from chalice import Response
 from io import StringIO
+from itertools import product
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -267,6 +268,126 @@ def multiply_by_month_promediado(df1, df2, months):
         raise
 
 "-----------------------------------------------------------------------------------------------------------"
+
+def group_by_type(input_df: pd.DataFrame, farms: list) -> pd.DataFrame:
+    """
+    Agrupa los valores del DataFrame por TIPO y FINCA, asegurando que se incluyan todas las fincas en farm_order.
+    
+    Args:
+        input_df (pd.DataFrame): DataFrame con columnas 'TIPO', 'FINCA' y columnas numéricas de fechas.
+        farm_order (list): Lista de fincas que deben estar presentes en el resultado final.
+    
+    Returns:
+        pd.DataFrame: DataFrame agrupado con todas las combinaciones TIPO-FINCA y valores numéricos sumados.
+    """
+    try:
+        logging.info("Iniciando limpieza de columnas TIPO y FINCA...")
+        input_df['FINCA'] = input_df['FINCA'].astype(str).str.strip()
+        input_df['TIPO'] = input_df['TIPO'].astype(str).str.strip()
+
+        logging.info("Obteniendo valores únicos de TIPO...")
+        tipos_presentes = input_df['TIPO'].unique()
+
+        logging.info("Creando combinaciones TIPO-FINCA completas...")
+        combinaciones = pd.DataFrame(list(product(tipos_presentes, farms)), columns=['TIPO', 'FINCA'])
+
+        logging.info("Agrupando por TIPO y FINCA...")
+        mo_grouped = input_df.groupby(['TIPO', 'FINCA']).sum(numeric_only=True).reset_index()
+
+        logging.info("Uniendo con combinaciones completas...")
+        mo_grouped_completo = combinaciones.merge(mo_grouped, on=['TIPO', 'FINCA'], how='left')
+
+        logging.info("Rellenando NaNs con ceros...")
+        mo_grouped_completo.fillna(0, inplace=True)
+
+        logging.info("Proceso de agrupación finalizado exitosamente.")
+        return mo_grouped_completo
+
+    except KeyError as e:
+        logging.error(f"Columna faltante en el DataFrame: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Ocurrió un error inesperado: {e}")
+        raise
+
+
+
+"--------------------------------------------------------------------------------------------------------------"
+import pandas as pd
+from itertools import product
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+import pandas as pd
+from itertools import product
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = []) -> pd.DataFrame:
+    """
+    Agrupa los valores del DataFrame por TIPO y FINCA, asegurando que se incluyan todas las fincas en el orden de `farms`,
+    y permite agregar una fila extra con la suma de los TIPO indicados en tipos_a_sumar.
+
+    Args:
+        input_df (pd.DataFrame): DataFrame con columnas 'TIPO', 'FINCA' y columnas numéricas de fechas.
+        farms (list): Lista de fincas que deben estar presentes en el resultado final.
+        tipos_a_sumar (list): Lista de TIPO que deben ser sumados como grupo adicional.
+
+    Returns:
+        pd.DataFrame: DataFrame agrupado con todas las combinaciones TIPO-FINCA, incluyendo la suma de los tipos indicados.
+    """
+    try:
+        logging.info("Iniciando limpieza de columnas TIPO y FINCA...")
+        input_df['FINCA'] = input_df['FINCA'].astype(str).str.strip()
+        input_df['TIPO'] = input_df['TIPO'].astype(str).str.strip()
+
+        logging.info("Obteniendo valores únicos de TIPO...")
+        tipos_presentes = input_df['TIPO'].unique()
+
+        logging.info("Creando combinaciones TIPO-FINCA completas...")
+        combinaciones = pd.DataFrame(list(product(tipos_presentes, farms)), columns=['TIPO', 'FINCA'])
+
+        logging.info("Agrupando por TIPO y FINCA...")
+        mo_grouped = input_df.groupby(['TIPO', 'FINCA']).sum(numeric_only=True).reset_index()
+
+        logging.info("Uniendo con combinaciones completas...")
+        mo_grouped_completo = combinaciones.merge(mo_grouped, on=['TIPO', 'FINCA'], how='left')
+
+        logging.info("Rellenando NaNs con ceros...")
+        mo_grouped_completo.fillna(0, inplace=True)
+
+        # Asegurar que las fincas estén en el orden definido por 'farms'
+        mo_grouped_completo['FINCA'] = pd.Categorical(mo_grouped_completo['FINCA'], categories=farms, ordered=True)
+        mo_grouped_completo.sort_values(by=['TIPO', 'FINCA'], inplace=True)
+
+        # Si hay tipos a sumar, agregamos una fila por finca
+        if types_sum:
+            logging.info(f"Sumando tipos especificados: {types_sum}")
+            subset_sum = mo_grouped_completo[mo_grouped_completo['TIPO'].isin(types_sum)]
+
+            suma_tipos = subset_sum.groupby('FINCA').sum(numeric_only=True).reset_index()
+            suma_tipos.insert(0, 'TIPO', '+'.join(types_sum))
+
+            # Asegurar el orden también para la suma
+            suma_tipos['FINCA'] = pd.Categorical(suma_tipos['FINCA'], categories=farms, ordered=True)
+            suma_tipos.sort_values(by='FINCA', inplace=True)
+
+            logging.info("Agregando fila de suma de tipos al DataFrame final...")
+            mo_grouped_completo = pd.concat([mo_grouped_completo, suma_tipos], ignore_index=True)
+
+        logging.info("Proceso de agrupación y orden finalizado exitosamente.")
+        return mo_grouped_completo
+
+    except KeyError as e:
+        logging.error(f"Columna faltante en el DataFrame: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Ocurrió un error inesperado: {e}")
+        raise
+
+"--------------------------------------------------------------------------------------------------------------"
 def object_to_dataframe(
     s3_client: S3Client,
     bucket_name: str,
@@ -391,7 +512,7 @@ def multiply_p_social(df1, df2, df3, col_1, col_2, col_3, months):
             df_sum[col] = df1[col] + df2[col]
 
         logger.info("Suma realizada con éxito.")
-       
+        
 
         # Merge de ambos DataFrames en base a la columna 'FINCA'
         logger.info("Realizando el merge sobre la columna FINCA y PRESTACIONES")
