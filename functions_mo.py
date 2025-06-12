@@ -9,6 +9,13 @@ from chalice import Chalice
 from chalice import Response
 from io import StringIO
 from itertools import product
+import pandas as pd
+from itertools import product
+import pandas as pd
+from itertools import product
+import logging
+from unidecode import unidecode
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +38,6 @@ def calculate_volume_distribution_factor(
         final_data = []
 
         for month in volum_distribution_subset_def.index:
-            logger.info(f"Procesando el mes: {month}")
             monthly_result = []
             for i in range(46):  # 0 a 45 son 46 elementos
                 result = (volum_file_emb_subset_def.iloc[i, :] * volum_distribution_subset_def.iloc[month, :]).sum()
@@ -41,6 +47,7 @@ def calculate_volume_distribution_factor(
         final_data_df = pd.DataFrame(final_data)
         logger.info("Matriz de resultados generada.")
 
+    
         final_data_df_trans = final_data_df.transpose()
         final_data_df_trans.columns = month_columns
         logger.info("Matriz de resultados transpuesta y columnas renombradas.")
@@ -59,6 +66,52 @@ def calculate_volume_distribution_factor(
         logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
         raise
 
+
+"----------------------------------------------------------------------------------------------------"
+def calculate_volume_distribution_blocks(
+    volum_file_emb_subset_def: pd.DataFrame,
+    volum_distribution_subset_def: pd.DataFrame,
+    volum_file_emb_transform_def: pd.DataFrame,
+    month_columns: list
+) -> pd.DataFrame:
+    try:
+        logger.info("Iniciando cálculo de volumen por bloques de 46 filas.")
+
+        final_data = []
+        block_size = 46
+        total_rows = volum_file_emb_subset_def.shape[0]
+
+        if total_rows % block_size != 0:
+            logger.warning("El número total de filas no es múltiplo de 46. Se truncará el exceso.")
+        
+        num_blocks = total_rows // block_size
+
+        for month in volum_distribution_subset_def.index:
+            monthly_result = []
+
+            for block in range(num_blocks):
+                block_start = block * block_size
+                block_end = block_start + block_size
+                result_block = []
+
+                for i in range(block_start, block_end):
+                    result = (volum_file_emb_subset_def.iloc[i, :] * volum_distribution_subset_def.iloc[month, :]).sum()
+                    result_block.append(result)
+
+                monthly_result.extend(result_block)
+
+            final_data.append(monthly_result)
+
+        # Convertir a DataFrame y transponer
+        final_data_df = pd.DataFrame(final_data).transpose()
+        final_data_df.columns = month_columns
+
+        logger.info("Cálculo de matriz de volumen completado correctamente.")
+        return final_data_df
+
+    except Exception as e:
+        logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
+        raise
 
 
 "-------------------------------------------------------------------------------------------------------"
@@ -149,9 +202,6 @@ def group_by_month(df, df_2):
         logging.error(f"An error occurred: {e}")
         raise
 "--reciclada----------------------------------------------------------------------------------------------------------"
-
-import pandas as pd
-import logging
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -269,14 +319,21 @@ def multiply_by_month_promediado(df1, df2, months):
 
 "-----------------------------------------------------------------------------------------------------------"
 
+
+from datetime import datetime
+from itertools import product
+import pandas as pd
+import logging
+
 def group_by_type(input_df: pd.DataFrame, farms: list) -> pd.DataFrame:
     """
-    Agrupa los valores del DataFrame por TIPO y FINCA, asegurando que se incluyan todas las fincas en farm_order.
-    
+    Agrupa los valores del DataFrame por TIPO y FINCA, asegurando que se incluyan todas las fincas en farms.
+    Convierte los nombres de columnas de fechas (desde la tercera hasta la penúltima columna) al tipo Timestamp.
+
     Args:
         input_df (pd.DataFrame): DataFrame con columnas 'TIPO', 'FINCA' y columnas numéricas de fechas.
-        farm_order (list): Lista de fincas que deben estar presentes en el resultado final.
-    
+        farms (list): Lista de fincas que deben estar presentes en el resultado final.
+
     Returns:
         pd.DataFrame: DataFrame agrupado con todas las combinaciones TIPO-FINCA y valores numéricos sumados.
     """
@@ -284,6 +341,19 @@ def group_by_type(input_df: pd.DataFrame, farms: list) -> pd.DataFrame:
         logging.info("Iniciando limpieza de columnas TIPO y FINCA...")
         input_df['FINCA'] = input_df['FINCA'].astype(str).str.strip()
         input_df['TIPO'] = input_df['TIPO'].astype(str).str.strip()
+
+        logging.info("Renombrando columnas de fechas al tipo Timestamp (posición 3 a penúltima)...")
+        fecha_column_map = {}
+        target_cols = input_df.columns[2:-1]  # desde la tercera hasta la penúltima
+        for col in target_cols:
+            try:
+                # Convierte a Timestamp
+                nueva_fecha = pd.to_datetime(col.split()[0], format="%d/%m/%Y")
+                fecha_column_map[col] = nueva_fecha
+            except (ValueError, IndexError):
+                continue  # Ignora columnas que no se pueden convertir
+
+        input_df.rename(columns=fecha_column_map, inplace=True)
 
         logging.info("Obteniendo valores únicos de TIPO...")
         tipos_presentes = input_df['TIPO'].unique()
@@ -311,19 +381,7 @@ def group_by_type(input_df: pd.DataFrame, farms: list) -> pd.DataFrame:
         raise
 
 
-
 "--------------------------------------------------------------------------------------------------------------"
-import pandas as pd
-from itertools import product
-import logging
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-import pandas as pd
-from itertools import product
-import logging
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = []) -> pd.DataFrame:
     """
@@ -386,6 +444,84 @@ def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = [])
     except Exception as e:
         logging.error(f"Ocurrió un error inesperado: {e}")
         raise
+"--------------------------------------------------------------------------------------------------------------"
+
+def merge_factor_by_id(id_value: int, df_type: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filtra las fincas del DataFrame `cut_emp` por el ID dado, limpia tildes en la columna FINCA,
+    y realiza un merge con el factor correspondiente para añadir la columna FACTOR. Si no hay FACTOR, lo llena con 0.
+
+    Args:
+        id_value (int): ID a filtrar en cut_emp.
+        mo_grouped_total (pd.DataFrame): DataFrame base a enriquecer.
+        cut_emp (pd.DataFrame): DataFrame con columnas 'ID', 'FACTOR', 'FINCA'.
+
+    Returns:
+        pd.DataFrame: DataFrame combinado con columna FACTOR asociada a cada FINCA.
+    """
+    try:
+        # Limpieza de tildes en FINCA
+        df_factor.loc[:, 'FINCA'] = df_factor['FINCA'].astype(str).apply(unidecode)
+
+        # Filtrar por ID
+        cut_filtered = df_factor[df_factor['ID'] == id_value]
+
+        # Hacer merge
+        result = pd.merge(df_type, cut_filtered[['FACTOR', 'FINCA']], how='left', on='FINCA')
+
+        # Rellenar valores nulos con 0
+        result['FACTOR'] = result['FACTOR'].fillna(0)
+
+        return result
+
+    except KeyError as e:
+        logging.error(f"Columna faltante: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
+        raise
+
+
+
+def multipy_factor_combined(df: pd.DataFrame, tipo: str) -> pd.DataFrame:
+    """
+    Filtra el DataFrame por un tipo específico y multiplica las columnas numéricas semanales por el valor de FACTOR.
+
+    Args:
+        df (pd.DataFrame): DataFrame que contiene columnas 'TIPO', 'FINCA', 'FACTOR' y columnas numéricas.
+        tipo (str): Valor de la columna 'TIPO' a filtrar (por ejemplo 'PRE').
+
+    Returns:
+        pd.DataFrame: DataFrame filtrado y ajustado por el FACTOR.
+    """
+    try:
+        logging.info(f"Filtrando por TIPO = {tipo}")
+        df_tipo = df[df['TIPO'] == tipo].copy()
+
+        # Identificar columnas numéricas que deben multiplicarse
+        weekly_columns = df_tipo.columns.difference(['TIPO', 'FINCA', 'FACTOR'])
+
+        logging.info("Aplicando FACTOR a columnas numéricas...")
+        df_tipo.loc[:, weekly_columns] = df_tipo[weekly_columns].multiply(df_tipo['FACTOR'], axis=0)
+
+        return df_tipo
+
+    except KeyError as e:
+        logging.error(f"Columna faltante: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
+        raise
+
+
+
+
+
+
+
+
+
+
 
 "--------------------------------------------------------------------------------------------------------------"
 def object_to_dataframe(
