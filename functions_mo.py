@@ -687,6 +687,68 @@ def multiply_p_social(df1, df2, df3, col_1, col_2, col_3, months):
         logger.error(f"Ocurrió un error inesperado: {e}")
         raise
 
+"-----------------------------------------------------------------------------------------------"
+
+import pandas as pd
+import logging
+
+def multiply_p_social_block(labor_df, promediado_df, full_matrix_df, month_columns):
+    """
+    Suma los valores mensuales entre dos DataFrames y los multiplica por 'PRESTACIONES'
+    según un DataFrame maestro.
+
+    Args:
+        labor_df (pd.DataFrame): DataFrame con columnas mensuales, 'FINCA' e 'ID'
+        promediado_df (pd.DataFrame): Segundo DataFrame con mismas columnas mensuales
+        full_matrix_df (pd.DataFrame): DataFrame con columnas ['FINCA', 'PRESTACIONES', 'ID']
+        month_columns (list): Lista de columnas de meses (strings como '2024-01', etc.)
+
+    Returns:
+        pd.DataFrame: DataFrame con las columnas sumadas y multiplicadas por PRESTACIONES
+    """
+    try:
+        logger = logging.getLogger(__name__)
+        logger.info("Inicia la función de suma y multiplicación con PRESTACIONES.")
+
+        # Asegurar que los nombres de las columnas sean strings
+        month_columns = [str(m).strip() for m in month_columns]
+
+        # Convertir columnas mensuales a numérico (por si hay errores o strings)
+        labor_df[month_columns] = labor_df[month_columns].apply(pd.to_numeric, errors='coerce')
+        promediado_df[month_columns] = promediado_df[month_columns].apply(pd.to_numeric, errors='coerce')
+
+        # Crear DataFrame de suma con 'FINCA' e 'ID'
+        df_sum = labor_df[['FINCA', 'ID']].copy()
+        df_sum[month_columns] = labor_df[month_columns].add(
+            promediado_df[month_columns], fill_value=0
+        )
+
+        # Eliminar columna de índice si es necesario (como 'ID' inicial)
+        df_sum = df_sum.iloc[:, 1:]  # elimina la primera columna (asumo que es 'ID')
+
+        logger.info("Suma realizada con éxito.")
+
+        # Merge con full_matrix para obtener PRESTACIONES
+        df_sum_merged = pd.merge(
+            df_sum,
+            full_matrix_df[['FINCA', 'PRESTACIONES', 'ID']],
+            on=['FINCA', 'ID'],
+            how='left'
+        )
+
+        # Multiplicar columnas mensuales por PRESTACIONES
+        for col in month_columns:
+            df_sum_merged[col] = df_sum_merged[col] * df_sum_merged['PRESTACIONES']
+
+        logger.info("Multiplicación con PRESTACIONES completada.")
+
+        return df_sum_merged
+
+    except Exception as e:
+        logger.error(f"Ocurrió un error en la función: {e}")
+        raise
+
+
 "-------------------------------------------------------------------------------------------------"
 def total_cost(df1, df2, df3, col_1, col_2, months):
     try:
