@@ -724,14 +724,14 @@ def multiply_p_social_block(labor_df, promediado_df, full_matrix_df, month_colum
         )
 
         # Eliminar columna de índice si es necesario (como 'ID' inicial)
-        df_sum = df_sum.iloc[:, 1:]  # elimina la primera columna (asumo que es 'ID')
+        df_sum = df_sum.iloc[:, 1:]  # elimina la primera columna 
 
         logger.info("Suma realizada con éxito.")
 
         # Merge con full_matrix para obtener PRESTACIONES
         df_sum_merged = pd.merge(
             df_sum,
-            full_matrix_df[['FINCA', 'PRESTACIONES', 'ID']],
+            full_matrix_df[['FINCA', 'PRESTACIONES', 'LABOR', 'ID']],
             on=['FINCA', 'ID'],
             how='left'
         )
@@ -798,7 +798,52 @@ def total_cost(df1, df2, df3, col_1, col_2, months):
 
 
 "-------------------------------------------------------------------------------------------------"
+def total_cost_block(df1, df2, df3, col_1, col_2, months):
+    try:
+        logger.info("Inicia la función sumar los dataframes de labor y promediados.")
 
+        # Convertir los nombres de los meses a strings si son Period
+        months = [str(m) for m in months]
+        df1.columns = df1.columns.astype(str)
+        df2.columns = df2.columns.astype(str)
+
+        # Asegurar que los valores sean numéricos
+        for col in months:
+            df1[col] = pd.to_numeric(df1[col], errors='coerce')
+            df2[col] = pd.to_numeric(df2[col], errors='coerce')
+
+        # Sumar los valores por cada mes
+        df_sum = df1[['FINCA', 'LABOR']].copy()  # Crear df_sum con la columna FINCA
+        for col in months:
+            df_sum[col] = df1[col] + df2[col]+ df3[col]
+
+        logger.info("Suma realizada con éxito.")
+
+        # Merge de ambos DataFrames en base a la columna 'FINCA'
+        logger.info("Realizando el merge sobre la columna FINCA y LABOR")
+        df_merged = pd.merge(df_sum, df3[[col_1, col_2]],  on=[col_1, col_2], how='left')
+
+        # Verificar que la columna existe después del merge
+        if col_2 not in df_merged.columns:
+            raise KeyError(f"La columna {col_2} no se encuentra en el DataFrame después del merge.")
+
+        
+        # Selección de columnas finales sin la columna 'TARIFA'
+        result_df = df_merged[[col_1, col_2] + months]
+
+        logger.info("Proceso completado exitosamente.")
+        return result_df
+
+    except KeyError as e:
+        logger.error(f"KeyError ocurrido: {e}")
+        raise
+    except pd.errors.MergeError as e:
+        logger.error(f"Error durante el merge: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Ocurrió un error inesperado: {e}")
+        raise
+"-------------------------------------------------------------------------------------------------"
 
 def get_item_from_dynamodb(table_name: str, key: dict, logger: Logger, dynamodb_client):
     """
