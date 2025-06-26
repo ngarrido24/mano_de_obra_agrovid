@@ -45,12 +45,10 @@ def calculate_volume_distribution_factor(
             final_data.append(monthly_result)
 
         final_data_df = pd.DataFrame(final_data)
-        logger.info("Matriz de resultados generada.")
-
-    
+        
         final_data_df_trans = final_data_df.transpose()
         final_data_df_trans.columns = month_columns
-        logger.info("Matriz de resultados transpuesta y columnas renombradas.")
+        
 
         # Aplicar factores de ajuste (multiplicación fila a fila)
         final_data_df_trans = final_data_df_trans.multiply(adjustment_factors, axis=0)
@@ -58,7 +56,6 @@ def calculate_volume_distribution_factor(
 
         volum_concat = volum_file_emb_transform_def[['FINCA', 'CONCEPTO']].reset_index(drop=True)
         volum_data_emb = pd.concat([volum_concat, final_data_df_trans], axis=1)
-        logger.info("DataFrame final concatenado con los datos de volumen transformados.")
 
         return volum_data_emb
 
@@ -269,7 +266,7 @@ def multiply_price(df1, df2, col_1, col_2, col_3, months):
 "---------------------------------------------------------------------------------------------------------"
 def multiply_by_month_promediado(df1, df2, months):
     try:
-        logger.info("Inicia la función para multiplicar ambos dataframes.")
+        
 
         # Limpiar espacios en los nombres de columnas
         df1.columns = df1.columns.str.strip().astype(str)
@@ -284,7 +281,7 @@ def multiply_by_month_promediado(df1, df2, months):
             df2[month] = pd.to_numeric(df2[month], errors='coerce')
 
         # Merge basado en 'PROMEDIADO'
-        logger.info("Se realiza el merge sobre la columna PROMEDIADO.")
+        
         df_merged = pd.merge(df1, df2, on='PROMEDIADO', how='left', suffixes=('_df1', '_df2'))
 
         # Verificar columnas después del merge
