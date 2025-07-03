@@ -512,6 +512,36 @@ def multipy_factor_combined(df: pd.DataFrame, tipo: str) -> pd.DataFrame:
 
 
 
+"-------------------------------------------------------------------------------------------------------------"
+def multipy_factor_combined_100021(df: pd.DataFrame, tipo: str, value: int) -> pd.DataFrame:
+    """
+    Filtra el DataFrame por un tipo específico y multiplica las columnas numéricas semanales por el valor de FACTOR.
+
+    Args:
+        df (pd.DataFrame): DataFrame que contiene columnas 'TIPO', 'FINCA', 'FACTOR' y columnas numéricas.
+        tipo (str): Valor de la columna 'TIPO' a filtrar (por ejemplo 'PRE').
+
+    Returns:
+        pd.DataFrame: DataFrame filtrado y ajustado por el FACTOR.
+    """
+    try:
+        logging.info(f"Filtrando por TIPO = {tipo}")
+        df_tipo = df[df['TIPO'] == tipo].copy()
+
+        # Identificar columnas numéricas que deben multiplicarse
+        weekly_columns = df_tipo.columns.difference(['TIPO', 'FINCA', 'FACTOR'])
+
+        logging.info("Aplicando FACTOR a columnas numéricas...")
+        df_tipo.loc[:, weekly_columns] = df_tipo[weekly_columns].multiply(value / 960 * df_tipo['FACTOR'], axis=0)
+
+        return df_tipo
+
+    except KeyError as e:
+        logging.error(f"Columna faltante: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
+        raise
 
 
 
