@@ -455,35 +455,34 @@ def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = [])
         logging.error(f"Ocurrió un error inesperado: {e}")
         raise
 "--------------------------------------------------------------------------------------------------------------"
-def vlookup_aprox_value(valor, esquema, tabla_esquemas):
+
+"--------------------------------------------------------------------------------------------------------------"
+def vlookup_aprox_value(valor, esquema, tabla_esquemas, campo_retorno='VALOR'):
     tabla_filtrada = tabla_esquemas[tabla_esquemas['ESQUEMA'].str.lower() == esquema.lower()]
     tabla_filtrada = tabla_filtrada.sort_values(by='VAL')
     coincidentes = tabla_filtrada[tabla_filtrada['VAL'] <= valor]
     if not coincidentes.empty:
-        return coincidentes.iloc[-1]['VALOR']
+        return coincidentes.iloc[-1][campo_retorno]
     else:
         return np.nan
-
-def vlookup_function(df_base, tabla_esquemas):
-    resultado = pd.DataFrame(index=df_base.index)
     
-    # Asegurar que ESQUEMA está presente
+def vlookup_function(df_base, tabla_esquemas, campo_retorno='VALOR'):
+    resultado = pd.DataFrame(index=df_base.index)
+
     if 'ESQUEMA' not in df_base.columns:
         raise ValueError("La columna 'ESQUEMA' no existe en df_base")
 
-    # Obtener columnas de fechas (todas menos ESQUEMA)
     fecha_cols = df_base.columns.drop('ESQUEMA')
 
-    # Aplicar la lógica celda a celda
     for idx in df_base.index:
         esquema = df_base.loc[idx, 'ESQUEMA']
         for fecha in fecha_cols:
             valor = df_base.loc[idx, fecha]
-            resultado.loc[idx, fecha] = vlookup_aprox_value(valor, esquema, tabla_esquemas)
+            resultado.loc[idx, fecha] = vlookup_aprox_value(valor, esquema, tabla_esquemas, campo_retorno)
 
-    # Añadir columna de esquema si la necesitas de nuevo
     resultado['ESQUEMA'] = df_base['ESQUEMA']
     return resultado
+
 "--------------------------------------------------------------------------------------------------------------"
 
 def merge_factor_by_id(id_value: int, df_type: pd.DataFrame, df_factor: pd.DataFrame) -> pd.DataFrame:
