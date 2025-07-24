@@ -316,7 +316,57 @@ def multiply_by_month_promediado(df1, df2, months):
         raise
 
 "-----------------------------------------------------------------------------------------------------------"
+import pandas as pd
 
+def social_p_parcela(df1, df2, escalar, month_columns):
+    """
+    Suma df1 + df2 por columnas mensuales y multiplica cada fila por un escalar correspondiente.
+    
+    Parámetros:
+    - df1: DataFrame con columnas ['FINCA', 'PROMEDIADO', '2024-01', ..., '2024-12']
+    - df2: DataFrame con columnas ['FINCA', '2024-01', ..., '2024-12']
+    - escalar: pd.Series de una dimensión con misma longitud que df1 y df2
+    - month_columns: lista con nombres de columnas mensuales como ['2024-01', ..., '2024-12']
+
+    Retorna:
+    - DataFrame con columnas ['FINCA', 'PROMEDIADO'] + columnas mensuales ajustadas
+    """
+
+    try:
+        # Normalizar nombres de columnas
+        df1.columns = df1.columns.astype(str).str.strip()
+        df2.columns = df2.columns.astype(str).str.strip()
+        month_columns = [str(col).strip() for col in month_columns]
+
+        # Validar tamaños
+        if not (len(df1) == len(df2) == len(escalar)):
+            raise ValueError("df1, df2 y escalar deben tener la misma cantidad de filas")
+
+        # Convertir columnas mensuales a numérico si no lo son
+        for col in month_columns:
+            df1[col] = pd.to_numeric(df1[col], errors='coerce')
+            df2[col] = pd.to_numeric(df2[col], errors='coerce')
+
+        # Sumar columnas de meses
+        df_sum = df1[month_columns].add(df2[month_columns], fill_value=0)
+
+        # Multiplicar por escalar fila a fila
+        df_scaled = df_sum.multiply(escalar, axis=0)
+
+        # Renombrar columnas si se desea (opcional)
+        # df_scaled.columns = [f"{col}_ajustado" for col in df_scaled.columns]
+
+        # Combinar con columnas base
+        result = pd.concat([df1[['FINCA', 'PROMEDIADO']], df_scaled], axis=1)
+
+        return result
+
+    except Exception as e:
+        print(f"Error en ajustar_por_escalar: {e}")
+        raise
+
+
+"-----------------------------------------------------------------------------------------------------------"
 def standardize_column_dates(df):
     # Intenta convertir las columnas a datetime si es posible
     try:
@@ -912,6 +962,43 @@ def total_cost_block(df1, df2, df3, col_1, col_2, months):
     except Exception as e:
         logger.error(f"Ocurrió un error inesperado: {e}")
         raise
+"-------------------------------------------------------------------------------------------------"
+def total_cost_parcela(df1, df2, df3, month_columns):
+    """
+    Suma fila a fila los valores de df1 + df2 + df3 en las columnas mensuales.
+
+    Parámetros:
+    - df1, df2, df3: DataFrames con columnas de meses.
+    - month_columns: lista de columnas mensuales como ['2024-01', ..., '2024-12']
+
+    Retorna:
+    - DataFrame con FINCA, PROMEDIADO y columnas mensuales sumadas.
+    """
+
+    try:
+        # Normalizar columnas
+        for df in [df1, df2, df3]:
+            df.columns = df.columns.astype(str).str.strip()
+        month_columns = [str(col).strip() for col in month_columns]
+
+        # Asegurar numéricos en columnas mensuales
+        for df in [df1, df2, df3]:
+            for col in month_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Sumar los tres DataFrames por columnas
+        df_sum = df1[month_columns].add(df2[month_columns], fill_value=0)
+        df_sum = df_sum.add(df3[month_columns], fill_value=0)
+
+        # Combinar con columnas clave
+        result = pd.concat([df1[['FINCA', 'PROMEDIADO']], df_sum], axis=1)
+
+        return result
+
+    except Exception as e:
+        print(f"Error en sumar_tres_dataframes: {e}")
+        raise
+
 "-------------------------------------------------------------------------------------------------"
 
 def get_item_from_dynamodb(table_name: str, key: dict, logger: Logger, dynamodb_client):
