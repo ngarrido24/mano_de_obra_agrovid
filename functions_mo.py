@@ -367,7 +367,7 @@ def social_p_parcela(df1, df2, escalar, month_columns):
 
 
 "-----------------------------------------------------------------------------------------------------------"
-def standardize_column_dates(df):
+"""def standardize_column_dates(df):
     # Intenta convertir las columnas a datetime si es posible
     try:
         new_columns = pd.to_datetime(df.columns, errors='coerce')
@@ -377,8 +377,59 @@ def standardize_column_dates(df):
         df.columns = new_columns
     except Exception as e:
         print(f"Error al estandarizar columnas de fechas: {e}")
+    return df"""
+
+def standardize_column_dates(df):
+    new_columns = []
+    for col in df.columns:
+        try:
+            # Intentar parsear como fecha (solo si realmente lo es)
+            parsed_date = pd.to_datetime(col, dayfirst=True, errors='raise')
+            new_columns.append(parsed_date.strftime('%Y-%m-%d'))  # convertir a formato estandarizado
+        except Exception:
+            new_columns.append(col)  # mantener columna original si no es fecha
+    df.columns = new_columns
     return df
+
 "-----------------------------------------------------------------------------------------------------------"
+def labores_ciclicas(df: pd.DataFrame, columna_id: str = 'ID', 
+                                     columna_finca: str = 'FINCA', columna_factor: str = 'FACTOR') -> pd.DataFrame:
+    """
+    Multiplica columnas de fechas con sufijos '_x' y '_y' y un FACTOR por fila.
+    Conserva solo las columnas de resultado más ID y FINCA.
+    
+    Parámetros:
+        df (pd.DataFrame): DataFrame de entrada.
+        columna_id (str): Nombre de la columna ID a conservar.
+        columna_finca (str): Nombre de la columna FINCA a conservar.
+        columna_factor (str): Nombre de la columna que contiene el factor por fila.
+
+    Retorna:
+        pd.DataFrame: DataFrame con columnas de resultado + ID + FINCA.
+    """
+    # Identificar columnas con sufijos _x y _y
+    cols_x = sorted([col for col in df.columns if col.endswith('_x')])
+    cols_y = sorted([col for col in df.columns if col.endswith('_y')])
+
+    # Validar que el número de columnas coincida
+    if len(cols_x) != len(cols_y):
+        raise ValueError("El número de columnas '_x' y '_y' no coincide.")
+
+    # Crear nuevas columnas con el resultado de la multiplicación
+    for col_x, col_y in zip(cols_x, cols_y):
+        new_col = col_x.replace('_x', '')  # Ejemplo: '6/01/2024'
+        df[new_col] = df[col_x] * df[col_y] * df[columna_factor]
+
+    # Seleccionar solo columnas necesarias
+    columnas_resultado = [col.replace('_x', '') for col in cols_x]
+    columnas_finales = [columna_id, columna_finca] + columnas_resultado
+
+    return df[columnas_finales]
+"-----------------------------------------------------------------------------------------------------------"
+def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
+    df[columna_finca] = pd.Categorical(df[columna_finca], categories=orden_fincas, ordered=True)
+    return df.sort_values(by=[columna_finca, columna_id], ascending=[True, True]).reset_index(drop=True)
+"------------------------------------------------------------------------------------------------------------"
 
 from datetime import datetime
 from itertools import product
