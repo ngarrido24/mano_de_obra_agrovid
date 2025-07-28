@@ -426,9 +426,24 @@ def labores_ciclicas(df: pd.DataFrame, columna_id: str = 'ID',
 
     return df[columnas_finales]
 "-----------------------------------------------------------------------------------------------------------"
-def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
+"""def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
     df[columna_finca] = pd.Categorical(df[columna_finca], categories=orden_fincas, ordered=True)
-    return df.sort_values(by=[columna_finca, columna_id], ascending=[True, True]).reset_index(drop=True)
+    return df.sort_values(by=[columna_finca, columna_id], ascending=[True, True]).reset_index(drop=True)"""
+
+def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
+    # Paso 1: ordenar globalmente por ID
+    df = df.sort_values(by=columna_id, ascending=True).copy()
+
+    # Paso 2: crear columna auxiliar con el índice del orden de FINCA
+    finca_to_order = {finca: i for i, finca in enumerate(orden_fincas)}
+    df['FINCA_ORDEN'] = df[columna_finca].map(finca_to_order)
+
+    # Paso 3: ordenar solo por el orden de finca, pero mantener el orden de ID global
+    df = df.sort_values(by='FINCA_ORDEN', kind='stable').drop(columns=['FINCA_ORDEN'])
+
+    return df.reset_index(drop=True)
+
+
 "------------------------------------------------------------------------------------------------------------"
 
 from datetime import datetime
