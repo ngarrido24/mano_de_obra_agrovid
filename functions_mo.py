@@ -15,6 +15,7 @@ import pandas as pd
 from itertools import product
 import logging
 from unidecode import unidecode
+import unicodedata
 import numpy as np
 
 # Set up logging
@@ -113,6 +114,146 @@ def calculate_volume_distribution_blocks(
 
 
 "-------------------------------------------------------------------------------------------------------"
+def calculate_volume_distribution_blocks_ciclics(
+    volum_file_emb_subset_def: pd.DataFrame,
+    volum_distribution_subset_def: pd.DataFrame,
+    volum_file_emb_transform_def: pd.DataFrame,  # no se usa; se mantiene por compatibilidad
+    month_columns: list,
+    id_col: str = "ID",
+    finca_col: str = "FINCA",
+) -> pd.DataFrame:
+    try:
+        logger.info("Iniciando cálculo de volumen por bloques de 46 filas.")
+
+        # --- util: normalizar nombres de columnas parseables a fecha ---
+        def _norm_week_cols(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+            rename_map = {}
+            for c in df.columns:
+                d = pd.to_datetime(str(c), errors="coerce")
+                if pd.notna(d):
+                    rename_map[c] = d.strftime("%Y-%m-%d")
+            return df.rename(columns=rename_map)
+
+        # Guardar meta (ID/FINCA) antes de quedarnos solo con semanas
+        base_meta = volum_file_emb_subset_def[[id_col, finca_col]].copy()
+
+        # Normalizar encabezados
+        A = _norm_week_cols(volum_file_emb_subset_def)
+        D = _norm_week_cols(volum_distribution_subset_def)
+
+        # Detectar columnas semanales (parseables a fecha)
+        def _is_date_label(c):
+            return pd.notna(pd.to_datetime(str(c), errors="coerce"))
+        weeks_A = [c for c in A.columns if _is_date_label(c)]
+        weeks_D = [c for c in D.columns if _is_date_label(c)]
+
+        # Alinear por semanas comunes, respetando el orden de A
+        common_weeks = [c for c in weeks_A if c in weeks_D]
+        if not common_weeks:
+            raise ValueError("No hay semanas en común entre ambos dataframes.")
+
+        if len(common_weeks) < len(weeks_A):
+            logger.warning(f"Semanas de A sin pesos en D (se ignoran): "
+                           f"{[c for c in weeks_A if c not in weeks_D]}")
+        if len(common_weeks) < len(weeks_D):
+            logger.warning(f"Semanas de D sin datos en A (se ignoran): "
+                           f"{[c for c in weeks_D if c not in weeks_A]}")
+
+        A = A[common_weeks].apply(pd.to_numeric, errors="coerce").fillna(0.0)   # (N x W)
+        D = D[common_weeks].apply(pd.to_numeric, errors="coerce").fillna(0.0)   # (M x W)
+
+        # Config de bloques
+        final_data = []
+        block_size = 46
+        total_rows = A.shape[0]
+        if total_rows % block_size != 0:
+            logger.warning("El número total de filas no es múltiplo de 46. Se truncará el exceso.")
+        num_blocks = total_rows // block_size
+        n_used = num_blocks * block_size  # filas efectivamente usadas
+
+        # Numpy para acelerar
+        A_np = A.to_numpy()                       # (N x W)
+        D_np = D.to_numpy()                       # (M x W)
+        n_months = D_np.shape[0]
+
+        for m in range(n_months):
+            monthly_result = []
+            w = D_np[m, :]                        # (W,)
+
+            for b in range(num_blocks):
+                s = b * block_size
+                e = s + block_size
+                # (46 x W) @ (W,) → (46,)
+                block_vals = A_np[s:e, :] @ w
+                monthly_result.extend(block_vals.tolist())
+
+            final_data.append(monthly_result)
+
+        # Salida
+        final_df = pd.DataFrame(final_data).transpose()  # (n_used x M)
+
+        if len(month_columns) != n_months:
+            logger.warning(f"month_columns ({len(month_columns)}) != filas de pesos ({n_months}). "
+                           f"Se numerarán 0..{n_months-1}.")
+            month_columns = list(range(n_months))
+        final_df.columns = month_columns
+
+        # --- Adjuntar ID y FINCA al inicio (solo las filas usadas) ---
+        meta_used = base_meta.iloc[:n_used].reset_index(drop=True)
+        final_df = final_df.reset_index(drop=True)
+        final_df.insert(0, finca_col, meta_used[finca_col].values)
+        final_df.insert(0, id_col,    meta_used[id_col].values)
+
+        # opcional: para conservar el índice original en las filas usadas
+        # final_df.index = volum_file_emb_subset_def.index[:n_used]
+
+        logger.info("Cálculo de matriz de volumen completado correctamente.")
+        return final_df
+
+    except Exception as e:
+        logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
+        raise
+
+
+"-------------------------------------------------------------------------------------------------------"
+def multiply_months_by_price_ciclics(
+    df_months: pd.DataFrame,   # df1: ID, FINCA, columnas de meses/fechas
+    df_tarifas: pd.DataFrame,  # df2: ID, ..., TARIFA
+    id_col: str = "ID",
+    tarifa_col: str = "TARIFA",
+    finca_col: str = "FINCA",
+    month_cols: list | None = None,
+    fillna_tarifa: float = 0.0,     # si falta tarifa para un ID, usa este valor
+    keep_tarifa_col: bool = False,  # si True, deja una columna TARIFA en la salida
+) -> pd.DataFrame:
+    out = df_months.copy()
+
+    # 1) Definir columnas de meses/fechas si no se pasan
+    if month_cols is None:
+        month_cols = [c for c in out.columns if c not in {id_col, finca_col}]
+
+    # 2) Mapa ID -> TARIFA
+    tarifas = (df_tarifas[[id_col, tarifa_col]]
+               .drop_duplicates(subset=[id_col], keep="first")
+               .set_index(id_col)[tarifa_col])
+
+    # 3) Traer tarifa por ID
+    out["_tarifa_tmp"] = out[id_col].map(tarifas)
+    out["_tarifa_tmp"] = pd.to_numeric(out["_tarifa_tmp"], errors="coerce").fillna(fillna_tarifa)
+
+    # 4) A numérico meses/fechas y multiplicar por fila
+    out[month_cols] = out[month_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    out[month_cols] = out[month_cols].mul(out["_tarifa_tmp"], axis=0)
+
+    # 5) Opcional: dejar o quitar la tarifa
+    if keep_tarifa_col:
+        out[tarifa_col] = out["_tarifa_tmp"]
+    out = out.drop(columns=["_tarifa_tmp"])
+
+    return out
+
+"--------------------------------------------------------------------------------------------------------"
 def calculate_promediados_factor(
     volum_distribution_subset_def,
     volum_file_emb_transform_def,
@@ -168,7 +309,39 @@ def calculate_promediados_factor(
 
 
 
+"---------------------------------------------------------------------------------------------------------"
+def ciclics_labor_calculation(df_months: pd.DataFrame, df_tarifas: pd.DataFrame) -> pd.DataFrame:
+    out = df_months.copy()
 
+    # Normalización mínima para las llaves
+    def _norm(s: pd.Series) -> pd.Series:
+        return (s.astype(str)
+                 .str.strip()
+                 .str.replace(r"\.0$", "", regex=True))
+
+    # Determinar clave: ID + FINCA si ambas existen
+    key = ['ID']
+    if 'FINCA' in df_months.columns and 'FINCA' in df_tarifas.columns:
+        key.append('FINCA')
+
+    # Normalizar claves en ambos DF
+    for c in key:
+        out[c] = _norm(out[c])
+        df_tarifas[c] = _norm(df_tarifas[c])
+
+    # Tomar TARIFA por clave exacta (sin colapsar por solo ID)
+    tarifas = df_tarifas[key + ['TARIFA']].drop_duplicates(subset=key, keep='first').copy()
+    tarifas['TARIFA'] = pd.to_numeric(tarifas['TARIFA'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
+
+    # Unir y multiplicar
+    out = out.merge(tarifas, on=key, how='left')
+    excluir = set(key + ['TARIFA'])
+    month_cols = [c for c in out.columns if c not in excluir]
+
+    out[month_cols] = out[month_cols].apply(pd.to_numeric, errors='coerce').fillna(0.0)
+    out[month_cols] = (out[month_cols].T * out['TARIFA']).T
+
+    return out.drop(columns=['TARIFA'])
 
 "---------------------------------------------------------------------------------------------------------"
 def group_by_month(df, df_2):
@@ -314,7 +487,75 @@ def multiply_by_month_promediado(df1, df2, months):
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         raise
+"----------------------------------------------------------------------------------------------------------"
+def multiply_by_month_promediado_ciclics(df1, df2, months):
+    try:
+        # Normaliza nombres de columnas
+        df1 = df1.copy()
+        df2 = df2.copy()
+        df1.columns = df1.columns.astype(str).str.strip()
+        df2.columns = df2.columns.astype(str).str.strip()
+        months = [str(m) for m in months]
 
+        # Convierte a numérico solo si la columna existe
+        for m in months:
+            if m in df1.columns:
+                df1[m] = pd.to_numeric(df1[m], errors='coerce')
+            if m in df2.columns:
+                df2[m] = pd.to_numeric(df2[m], errors='coerce')
+
+        # Merge por PROMEDIADO
+        if 'PROMEDIADO' not in df1.columns or 'PROMEDIADO' not in df2.columns:
+            raise KeyError("Falta la columna 'PROMEDIADO' en alguno de los DataFrames.")
+        df_merged = pd.merge(df1, df2, on='PROMEDIADO', how='left', suffixes=('_df1', '_df2'))
+
+        # Detecta posible columna multiplicadora si df2 no tiene meses
+        candidatas = ['TARIFA', 'FACTOR', 'VALOR', 'COEF', 'MULTIPLICADOR']
+        mult_col = None
+        for base in candidatas:
+            if base in df_merged.columns:
+                mult_col = base
+                break
+            if f"{base}_df2" in df_merged.columns:
+                mult_col = f"{base}_df2"
+                break
+        if mult_col is not None:
+            df_merged[mult_col] = pd.to_numeric(df_merged[mult_col], errors='coerce')
+
+        # Multiplicación por mes
+        for m in months:
+            # Encuentra la columna de df1 tras el merge (con o sin sufijo)
+            if m in df_merged.columns:
+                col_df1 = m
+            elif f"{m}_df1" in df_merged.columns:
+                col_df1 = f"{m}_df1"
+            else:
+                # Si el mes no existe en df1, no hay nada que multiplicar
+                continue
+
+            # Determina el factor: mes de df2 o columna multiplicadora única
+            if f"{m}_df2" in df_merged.columns:
+                factor = pd.to_numeric(df_merged[f"{m}_df2"], errors='coerce')
+            elif mult_col is not None:
+                factor = df_merged[mult_col]
+            else:
+                # Ni mes en df2 ni multiplicador único: no se puede calcular este mes
+                continue
+
+            df_merged[m] = pd.to_numeric(df_merged[col_df1], errors='coerce').fillna(0.0) * factor.fillna(0.0)
+
+        # Devuelve FINCA + meses si FINCA existe; si no, solo meses
+        if 'FINCA' in df_merged.columns:
+            cols = ['FINCA'] + [m for m in months if m in df_merged.columns]
+        else:
+            cols = [m for m in months if m in df_merged.columns]
+
+        result_df = df_merged[cols].copy()
+        return result_df
+
+    except Exception as e:
+        # Propaga con contexto claro
+        raise RuntimeError(f"Error en multiply_by_month_promediado: {e}") from e
 "-----------------------------------------------------------------------------------------------------------"
 import pandas as pd
 
@@ -430,7 +671,7 @@ def labores_ciclicas(df: pd.DataFrame, columna_id: str = 'ID',
     df[columna_finca] = pd.Categorical(df[columna_finca], categories=orden_fincas, ordered=True)
     return df.sort_values(by=[columna_finca, columna_id], ascending=[True, True]).reset_index(drop=True)"""
 
-def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
+"""def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
     # Paso 1: ordenar globalmente por ID
     df = df.sort_values(by=columna_id, ascending=True).copy()
 
@@ -441,7 +682,18 @@ def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID')
     # Paso 3: ordenar solo por el orden de finca, pero mantener el orden de ID global
     df = df.sort_values(by='FINCA_ORDEN', kind='stable').drop(columns=['FINCA_ORDEN'])
 
-    return df.reset_index(drop=True)
+    return df.reset_index(drop=True)"""
+def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
+    # Paso 1: crear una columna auxiliar con el orden de la finca
+    finca_to_order = {finca: i for i, finca in enumerate(orden_fincas)}
+    df['FINCA_ORDEN'] = df[columna_finca].map(finca_to_order)
+
+    # Paso 2: ordenar primero por ID, luego por el orden de finca
+    df = df.sort_values(by=[columna_id, 'FINCA_ORDEN'], ascending=[True, True])
+
+    # Paso 3: eliminar columna auxiliar
+    return df.drop(columns='FINCA_ORDEN').reset_index(drop=True)
+
 
 
 "------------------------------------------------------------------------------------------------------------"
@@ -571,7 +823,26 @@ def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = [])
         logging.error(f"Ocurrió un error inesperado: {e}")
         raise
 "--------------------------------------------------------------------------------------------------------------"
+def reparar_codificacion(df, columna):
+    """
+    Reconvierte texto mal decodificado (ej. 'ALÃ' → 'ALÍ') y elimina tildes (acentos).
+    """
+    def fix_encoding_and_remove_accents(texto):
+        if pd.isnull(texto):
+            return texto
+        try:
+            # Repara codificación mal leída como UTF-8 en vez de Latin-1
+            texto = texto.encode('latin-1').decode('utf-8')
+        except:
+            pass  # Si no puede reconvertir, lo deja como está
+        
+        # Elimina tildes
+        texto = unicodedata.normalize('NFD', texto)
+        texto = ''.join([c for c in texto if unicodedata.category(c) != 'Mn'])
+        return texto
 
+    df[columna] = df[columna].apply(fix_encoding_and_remove_accents)
+    return df
 "--------------------------------------------------------------------------------------------------------------"
 def vlookup_aprox_value(valor, esquema, tabla_esquemas, campo_retorno='VALOR'):
     tabla_filtrada = tabla_esquemas[tabla_esquemas['ESQUEMA'].str.lower() == esquema.lower()]
@@ -935,6 +1206,66 @@ def multiply_p_social_block(labor_df, promediado_df, full_matrix_df, month_colum
 
 
 "-------------------------------------------------------------------------------------------------"
+def multiply_p_social_block_ciclics(labor_df, promediado_df, full_matrix_df, month_columns):
+    months = [str(m).strip() for m in month_columns]
+
+    ldf = labor_df.copy()
+    pdf = promediado_df.copy()
+    fdf = full_matrix_df.copy()
+
+    # Normaliza nombres de columnas
+    for df in (ldf, pdf, fdf):
+        df.columns = df.columns.map(lambda c: str(c).strip())
+
+    # Asegura columnas mensuales
+    for m in months:
+        if m not in ldf.columns: ldf[m] = 0.0
+        if m not in pdf.columns: pdf[m] = 0.0
+
+    # A numérico
+    ldf[months] = ldf[months].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    pdf[months] = pdf[months].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    # ---------- SUMA (labor + promediado) ----------
+    if "ID" in pdf.columns:
+        # Alinear por FINCA + ID (solo suma promediado al ID correspondiente)
+        pdf_unique = (pdf.drop_duplicates(subset=["FINCA","ID"], keep="first")
+                        .set_index(["FINCA","ID"])[months])
+        idx = pd.MultiIndex.from_frame(ldf[["FINCA","ID"]])
+        prom_aligned = pdf_unique.reindex(idx).fillna(0.0).to_numpy()
+    else:
+        # Fallback: alinear por FINCA (una fila por FINCA)
+        pdf_unique = (pdf.drop_duplicates(subset=["FINCA"], keep="first")
+                        .set_index("FINCA")[months])
+        prom_aligned = pdf_unique.reindex(ldf["FINCA"]).fillna(0.0).to_numpy()
+
+    labor_vals  = ldf[months].to_numpy(dtype=float)
+    summed_vals = labor_vals + prom_aligned   # misma forma que labor_df[months]
+
+    # ---------- PRESTACIONES por (FINCA, ID) ----------
+    fdf_unique = (fdf[["FINCA","ID","PRESTACIONES"]]
+                    .drop_duplicates(subset=["FINCA","ID"], keep="first")
+                    .copy())
+    fdf_unique["PRESTACIONES"] = pd.to_numeric(
+        fdf_unique["PRESTACIONES"].astype(str).str.replace(",", ".", regex=False),
+        errors="coerce"
+    ).fillna(0.0)
+
+    pairs = pd.MultiIndex.from_frame(ldf[["FINCA","ID"]])
+    prest = fdf_unique.set_index(["FINCA","ID"])["PRESTACIONES"].reindex(pairs).fillna(0.0).to_numpy()
+
+    # ---------- Multiplicación final ----------
+    result_vals = summed_vals * prest.reshape(-1, 1)
+
+    # Armar resultado final
+    result = pd.DataFrame(result_vals, columns=months)
+    result.insert(0, "ID", ldf["ID"].values)
+    result.insert(0, "FINCA", ldf["FINCA"].values)
+
+    return result
+
+
+"-------------------------------------------------------------------------------------------------"
 def total_cost(df1, df2, df3, col_1, col_2, months):
     try:
         logger.info("Inicia la función sumar los dataframes de labor y promediados.")
@@ -998,7 +1329,7 @@ def total_cost_block(df1, df2, df3, col_1, col_2, months):
             df2[col] = pd.to_numeric(df2[col], errors='coerce')
 
         # Sumar los valores por cada mes
-        df_sum = df1[['FINCA', 'LABOR']].copy()  # Crear df_sum con la columna FINCA
+        df_sum = df1[[col_1, col_2]].copy()  # Crear df_sum con la columna FINCA
         for col in months:
             df_sum[col] = df1[col] + df2[col]+ df3[col]
 
