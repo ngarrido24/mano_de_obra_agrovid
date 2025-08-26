@@ -215,7 +215,72 @@ def calculate_volume_distribution_blocks_ciclics(
         logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
         raise
 
+"------------------------------------------------------------------------------------------------------"
+def quantity_fijas(
+    df1: pd.DataFrame,
+    fincas_df: pd.DataFrame,
+    month: list,                
+    mes_col: str = "SEMANA",
+    mult_cols=("FACTOR",),
+) -> pd.DataFrame:
+    """
+    Suma por mes las filas de df1 (según mes_col) y multiplica por los factores de fincas_df.
+    - 'month' es la lista (longitud 12) que define el orden/etiquetas de salida (ej. ["2024-01", ..., "2024-12"]).
+    - 'mult_cols' acepta string o iterable con nombres de columnas en fincas_df.
+    """
 
+
+    # Mapeo ES->orden pasado
+    meses_es = [
+        "ENERO","FEBRERO","MARZO","ABRIL","MAYO","JUNIO",
+        "JULIO","AGOSTO","SEPTIEMBRE","OCTUBRE","NOVIEMBRE","DICIEMBRE"
+    ]
+    mapa = dict(zip(meses_es, month))
+
+    # --- 1) Mensualizar df1 ---
+    d = df1.copy()
+    d.columns = d.columns.astype(str).str.strip()
+    etiquetas = (
+        d[mes_col]
+        .astype(str).str.strip().str.upper()
+        .replace(mapa)  # si ya viene en las mismas etiquetas que 'orden', no cambia
+    )
+    valores = (
+        d.drop(columns=[mes_col])
+         .apply(pd.to_numeric, errors="coerce")
+         .fillna(0.0)
+         .sum(axis=1)
+    )
+    base = (
+        valores.groupby(etiquetas)
+        .sum()
+        .reindex(month, fill_value=0.0)
+        .values
+        .astype(float)
+    )  # shape: (12,)
+
+    # --- 2) Multiplicadores por (FINCA, ID) ---
+    g = fincas_df.copy()
+    g.columns = g.columns.astype(str).str.strip()
+    g["FINCA"] = g["FINCA"].astype(str).str.strip()
+    g["ID"]    = g["ID"].astype(str).str.strip()
+
+    # aceptar string o lista/tupla
+    mult_cols = [mult_cols] if isinstance(mult_cols, str) else list(mult_cols)
+    colmap = {c.lower(): c for c in g.columns}
+    mult = pd.Series(1.0, index=g.index, dtype=float)
+    for req in mult_cols:
+        key = str(req).strip().lower()
+        if key not in colmap:
+            raise KeyError(f"'{req}' no existe en fincas_df. Columnas: {list(g.columns)}")
+        mult *= pd.to_numeric(g[colmap[key]], errors="coerce").fillna(0.0)
+
+    # --- 3) Construir salida ---
+    vals = mult.to_numpy()[:, None] * base[None, :]  # (n_filas x 12)
+    out = pd.DataFrame(vals, columns=month)
+    out.insert(0, "ID", g["ID"].values)
+    out.insert(0, "FINCA", g["FINCA"].values)
+    return out
 "-------------------------------------------------------------------------------------------------------"
 def multiply_months_by_price_ciclics(
     df_months: pd.DataFrame,   # df1: ID, FINCA, columnas de meses/fechas
@@ -252,6 +317,87 @@ def multiply_months_by_price_ciclics(
     out = out.drop(columns=["_tarifa_tmp"])
 
     return out
+"--------------------------------------------------------------------------------------------------------"
+def quantity_other_labors(df1: pd.DataFrame,
+                                     df2: pd.DataFrame,
+                                     meses_ordenados: list,
+                                     factor=None) -> pd.DataFrame:
+    # Meses a 'YYYY-MM' y orden original de FINCA
+    meses = [str(m)[:7] for m in meses_ordenados]
+    orden_fincas = df1['FINCA'].drop_duplicates().tolist()
+
+    # Nombres de columnas -> 'YYYY-MM-DD' (solo nombres)
+    _ymd = lambda c: c if c in ('CONCEPTO','FINCA','MES') else (
+        pd.to_datetime(str(c), errors='coerce').strftime('%Y-%m-%d')
+        if pd.to_datetime(str(c), errors='coerce') is not pd.NaT else str(c)
+    )
+    df1 = df1.rename(columns={c: _ymd(c) for c in df1.columns}).copy()
+    df2 = df2.rename(columns={c: _ymd(c) for c in df2.columns}).copy()
+
+    # Asegurar columna 'MES' en df2 (maneja índice/variantes comunes)
+    if 'MES' not in df2.columns:
+        cand = [c for c in df2.columns if str(c).strip().upper()=='MES']
+        if cand: df2 = df2.rename(columns={cand[0]:'MES'})
+        elif (df2.index.name and str(df2.index.name).strip().upper()=='MES'):
+            df2 = df2.reset_index().rename(columns={df2.columns[0]:'MES'})
+        else:
+            meses_es = {'ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'}
+            col_match = next((c for c in df2.columns
+                              if pd.Series(df2[c].astype(str).str.strip().str.upper()).isin(meses_es).mean()>=0.8), None)
+            if col_match: df2 = df2.rename(columns={col_match:'MES'})
+            else:
+                idx_vals = pd.Index(df2.index.astype(str).str.strip().str.upper())
+                if pd.Series(idx_vals).isin(meses_es).mean()>=0.8:
+                    df2 = df2.reset_index().rename(columns={df2.columns[0]:'MES'})
+                else:
+                    raise KeyError("df2 debe contener una columna 'MES' (ENERO..DICIEMBRE).")
+
+    # Semanas comunes y df1 agregado por FINCA
+    semanas = sorted(set([c for c in df1.columns if c not in ('CONCEPTO','FINCA')])
+                     .intersection([c for c in df2.columns if c!='MES']))
+    df1_ag = df1[['FINCA']+semanas].groupby('FINCA', as_index=False, sort=False).sum(numeric_only=True)
+
+    # Mapear MES (ES) -> número 'MM'
+    mapa = {'ENERO':'01','FEBRERO':'02','MARZO':'03','ABRIL':'04','MAYO':'05','JUNIO':'06',
+            'JULIO':'07','AGOSTO':'08','SEPTIEMBRE':'09','OCTUBRE':'10','NOVIEMBRE':'11','DICIEMBRE':'12'}
+    df2['_MES_NUM'] = df2['MES'].astype(str).str.strip().str.upper().map(mapa)
+
+    # Factor por FINCA/MES (scalar, Serie por FINCA, por MES, por posición, o MultiIndex)
+    def _factor_vec(mes: str) -> np.ndarray:
+        n = len(orden_fincas)
+        if factor is None or np.isscalar(factor): return np.full(n, float(factor or 1.0))
+        if isinstance(factor, pd.Series):
+            idx = factor.index
+            if isinstance(idx, pd.MultiIndex):
+                return np.array([float(factor.get((f,mes), factor.get((mes,f), 1.0))) for f in orden_fincas], float)
+            if mes in idx:  # Serie por MES
+                return np.full(n, float(factor.get(mes,1.0)))
+            if any(f in idx for f in orden_fincas):  # Serie por FINCA
+                return factor.reindex(orden_fincas).fillna(1.0).astype(float).to_numpy()
+            if hasattr(idx,'dtype') and np.issubdtype(idx.dtype, np.integer) and len(factor)==n:  # por posición
+                return factor.reset_index(drop=True).fillna(1.0).astype(float).to_numpy()
+        return np.ones(n)
+
+    # Cálculo: semanas = (prefijo del mes) ∪ (pesos>0 en fila del MES); resultado = (v·w/s)*s*factor = (v·w)*factor
+    res = pd.DataFrame({'FINCA': df1_ag['FINCA']})
+    for mes in meses:
+        mm = mes[5:7]
+        pos = df2.index[df2['_MES_NUM']==mm]
+        if len(pos)==0: res[mes]=0.0; continue
+        fila = df2.loc[pos[0]]
+        pref = mes+'-'
+        sem_mes = sorted({c for c in semanas if c.startswith(pref)} |
+                         {c for c in semanas if pd.to_numeric(fila.get(c,0), errors='coerce')>0})
+        if not sem_mes: res[mes]=0.0; continue
+        w = fila[sem_mes].astype(float).fillna(0.0).to_numpy()
+        s = w.sum()
+        if s==0: res[mes]=0.0; continue
+        v = df1_ag[sem_mes].astype(float).fillna(0.0).to_numpy()
+        res[mes] = v.dot(w) * _factor_vec(mes)
+
+    # Respetar orden de FINCA y columnas
+    return res.set_index('FINCA').reindex(orden_fincas).reset_index()[['FINCA']+meses]
+
 
 "--------------------------------------------------------------------------------------------------------"
 def calculate_promediados_factor(
