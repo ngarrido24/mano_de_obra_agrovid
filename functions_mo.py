@@ -969,26 +969,137 @@ def group_by_type_sum(input_df: pd.DataFrame, farms: list, types_sum: list = [])
         logging.error(f"Ocurrió un error inesperado: {e}")
         raise
 "--------------------------------------------------------------------------------------------------------------"
-def reparar_codificacion(df, columna):
+def reparar_codificacion(df, columna, aplicar_fix_cienaga: bool = False):
     """
-    Reconvierte texto mal decodificado (ej. 'ALÃ' → 'ALÍ') y elimina tildes (acentos).
+    Reconvierte texto mal decodificado (ej. 'ALÃ\x8d' → 'ALÍ') y elimina tildes (acentos).
+    Si aplicar_fix_cienaga=True, corrige 'CIA‰NAGA' / 'CIÃ‰NAGA' a 'CIENAGA'.
     """
     def fix_encoding_and_remove_accents(texto):
         if pd.isnull(texto):
             return texto
+
+        # Asegurar cadena sin invocar str() (evita conflictos si 'str' fue reasignado)
+        s = f"{texto}"
+
         try:
             # Repara codificación mal leída como UTF-8 en vez de Latin-1
-            texto = texto.encode('latin-1').decode('utf-8')
-        except:
+            s = s.encode('latin-1').decode('utf-8')
+        except Exception:
             pass  # Si no puede reconvertir, lo deja como está
-        
+
+        # --- FIX opcional para CIENAGA ---
+        if aplicar_fix_cienaga:
+            s_cmp = s.strip().upper()
+            if s_cmp in ("CIA‰NAGA", "CIÃ‰NAGA"):
+                s = "CIENAGA"
+
         # Elimina tildes
-        texto = unicodedata.normalize('NFD', texto)
-        texto = ''.join([c for c in texto if unicodedata.category(c) != 'Mn'])
-        return texto
+        s = unicodedata.normalize('NFD', s)
+        s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')
+        return s
 
     df[columna] = df[columna].apply(fix_encoding_and_remove_accents)
     return df
+
+"--------------------------------------------------------------------------------------------------------------"
+import pandas as pd
+import re
+
+def multiplicar_mes_por_serie_filas(df: pd.DataFrame,
+                                    factor: pd.Series,
+                                    month_cols=None,
+                                    inplace: bool = False,
+                                    na_factor: float = 1.0) -> pd.DataFrame:
+    """
+    Multiplica las columnas mensuales (YYYY-MM) por una Serie de factores por FILA.
+    Alinea por POSICIÓN (no por etiquetas). La longitud de `factor` debe ser igual a len(df).
+
+    Params
+    ------
+    df: DataFrame de entrada.
+    factor: pd.Series de longitud igual a df (p. ej. índices 138..183).
+    month_cols: lista opcional de columnas a multiplicar.
+    inplace: si True, modifica df en sitio.
+    na_factor: reemplazo para NaN en factor (por defecto 1.0 = sin cambio).
+
+    Retorna
+    -------
+    DataFrame (o el mismo si inplace=True).
+    """
+    # Detectar columnas mensuales si no se pasan
+    if month_cols is None:
+        pat = re.compile(r'^\d{4}-\d{2}$')
+        month_cols = sorted([c for c in df.columns if pat.match(f"{c}")])
+
+    if not month_cols:
+        raise ValueError("No se encontraron columnas mensuales con formato 'YYYY-MM'.")
+
+    if len(factor) != len(df):
+        raise ValueError(f"Longitudes distintas: len(factor)={len(factor)} vs len(df)={len(df)}.")
+
+    sacos_result = df if inplace else df.copy()
+
+    # Asegurar numérico y preparar factor por posición
+    sacos_result[month_cols] = sacos_result[month_cols].apply(pd.to_numeric, errors='coerce')
+    fac_vals = pd.to_numeric(factor, errors='coerce').fillna(na_factor).to_numpy()
+
+    # Multiplicación fila a fila (por posición)
+    sacos_result.loc[:, month_cols] = sacos_result.loc[:, month_cols].to_numpy() * fac_vals.reshape(-1, 1)
+
+    return sacos_result
+"-------------------------------------------------------------------------------------------------------------"
+def quantity_other_labors_800008(
+    matriz_semanas: pd.DataFrame,
+    farm_order: list[str],
+    month_columns: list[str],
+    factor,                      # escalar o Serie/array de longitud = len(farm_order)
+    semana_col: str = "SEMANA"
+) -> pd.DataFrame:
+    """
+    1) Suma cada fila (mes) de `matriz_semanas` en las columnas de semanas.
+    2) Transpone al orden de `month_columns`.
+    3) Crea matriz (FINCA x month_columns) llenando con 1.0 y multiplica por la serie mensual.
+    4) Multiplica cada fila por `factor` desde la col 1 (FINCA queda intacta), por POSICIÓN.
+       - Si `factor` es escalar -> aplica a todas las filas.
+       - Si es Serie/array -> debe tener len(farm_order). Se ignoran etiquetas de índice.
+    Devuelve: DataFrame con 'FINCA' + month_columns (shape: len(farm_order) × (1+len(month_columns))).
+    """
+    if semana_col not in matriz_semanas.columns:
+        raise ValueError(f"'{semana_col}' no existe en matriz_semanas.")
+
+    # 1) Sumar por fila (mes)
+    sumas_por_mes = (
+        matriz_semanas
+        .drop(columns=[semana_col])
+        .apply(pd.to_numeric, errors="coerce")
+        .sum(axis=1)
+    )
+    if len(sumas_por_mes) != len(month_columns):
+        raise ValueError(
+            f"meses en matriz={len(sumas_por_mes)} vs month_columns={len(month_columns)}"
+        )
+
+    # 2) Serie mensual indexada por month_columns
+    serie_mensual = pd.Series(sumas_por_mes.to_numpy(), index=month_columns, dtype="float64")
+
+    # 3) Matriz base FINCA x meses con 1.0 y escalada por columnas
+    base = pd.DataFrame({"FINCA": farm_order})
+    for m in month_columns:
+        base[m] = 1.0
+    base.loc[:, month_columns] = base.loc[:, month_columns].multiply(serie_mensual, axis="columns")
+
+    # 4) Multiplicar por factor por FILA (desde col 1), alineando por POSICIÓN
+    out = base.copy(deep=True)
+    if np.isscalar(factor):
+        out.iloc[:, 1:] = out.iloc[:, 1:].multiply(float(factor))
+    else:
+        fac_arr = np.asarray(factor, dtype=float)
+        if fac_arr.shape[0] != len(farm_order):
+            raise ValueError(f"len(factor)={fac_arr.shape[0]} debe igualar len(farm_order)={len(farm_order)}")
+        out.iloc[:, 1:] = out.iloc[:, 1:].multiply(fac_arr, axis=0)  # posición, no etiquetas
+
+    return out
+
 "--------------------------------------------------------------------------------------------------------------"
 def vlookup_aprox_value(valor, esquema, tabla_esquemas, campo_retorno='VALOR'):
     tabla_filtrada = tabla_esquemas[tabla_esquemas['ESQUEMA'].str.lower() == esquema.lower()]
