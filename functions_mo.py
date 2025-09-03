@@ -874,6 +874,20 @@ def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID')
     return df.drop(columns='FINCA_ORDEN').reset_index(drop=True)
 
 
+def farm_order_process_concat(df, orden_fincas, columna_finca='FINCA'):
+    # Si FINCA está en el índice, lo pasamos a columna
+    if columna_finca not in df.columns and df.index.name == columna_finca:
+        df = df.reset_index()
+
+    return (df
+            .sort_values(
+                by=columna_finca,
+                key=lambda s: pd.Categorical(s, categories=orden_fincas, ordered=True),
+                kind='mergesort'              # orden estable
+            )
+            .reset_index(drop=True))
+
+
 
 "------------------------------------------------------------------------------------------------------------"
 
