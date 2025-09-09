@@ -222,13 +222,36 @@ def quantity_fijas(
     month: list,                
     mes_col: str = "SEMANA",
     mult_cols=("FACTOR",),
+    id_mode: str = "str",        # 'str' | 'zfill' | 'int'  ← NUEVO
+    id_width: int | None = None  # ancho para 'zfill'       ← NUEVO
 ) -> pd.DataFrame:
     """
     Suma por mes las filas de df1 (según mes_col) y multiplica por los factores de fincas_df.
-    - 'month' es la lista (longitud 12) que define el orden/etiquetas de salida (ej. ["2024-01", ..., "2024-12"]).
+    - 'month' es la lista (longitud 12) con las etiquetas de salida (ej. ["2024-01", ..., "2024-12"]).
     - 'mult_cols' acepta string o iterable con nombres de columnas en fincas_df.
+    - 'id_mode':
+        * 'str'   -> ID como texto limpio (recomendado si en el otro DF es object/string).
+        * 'zfill' -> ID como texto con ceros a la izquierda (usa id_width o lo infiere).
+        * 'int'   -> ID numérico (Int64).
     """
 
+    # Helper interno: normaliza ID
+    def _normalize_id(s: pd.Series, mode="str", width=None) -> pd.Series:
+        # limpia espacios (incluye NBSP) y quita sufijo '.0' típico de Excel
+        out = (s.astype("string")
+                 .str.replace("\u00a0", " ", regex=False)
+                 .str.strip()
+                 .str.replace(r"\.0+$", "", regex=True))
+        if mode == "int":
+            return pd.to_numeric(out, errors="coerce").astype("Int64")
+        if mode == "zfill":
+            # conserva NaN sin convertirlos a '000...'
+            na = out.isna()
+            w = int(width) if width else max(1, int(out.dropna().str.len().max() or 1))
+            out = out.fillna("").str.zfill(w)
+            return out.mask(na)
+        # modo 'str'
+        return out
 
     # Mapeo ES->orden pasado
     meses_es = [
@@ -243,7 +266,7 @@ def quantity_fijas(
     etiquetas = (
         d[mes_col]
         .astype(str).str.strip().str.upper()
-        .replace(mapa)  # si ya viene en las mismas etiquetas que 'orden', no cambia
+        .replace(mapa)
     )
     valores = (
         d.drop(columns=[mes_col])
@@ -263,7 +286,8 @@ def quantity_fijas(
     g = fincas_df.copy()
     g.columns = g.columns.astype(str).str.strip()
     g["FINCA"] = g["FINCA"].astype(str).str.strip()
-    g["ID"]    = g["ID"].astype(str).str.strip()
+    # ←← Normalización de ID
+    g["ID"] = _normalize_id(g["ID"], mode=id_mode, width=id_width)
 
     # aceptar string o lista/tupla
     mult_cols = [mult_cols] if isinstance(mult_cols, str) else list(mult_cols)
@@ -281,7 +305,7 @@ def quantity_fijas(
     out.insert(0, "ID", g["ID"].values)
     out.insert(0, "FINCA", g["FINCA"].values)
     return out
-"-------------------------------------------------------------------------------------------------------"
+"--------------------------------------------------------------------------------------------------------"
 def multiply_months_by_price_ciclics(
     df_months: pd.DataFrame,   # df1: ID, FINCA, columnas de meses/fechas
     df_tarifas: pd.DataFrame,  # df2: ID, ..., TARIFA
@@ -317,6 +341,7 @@ def multiply_months_by_price_ciclics(
     out = out.drop(columns=["_tarifa_tmp"])
 
     return out
+
 "--------------------------------------------------------------------------------------------------------"
 def quantity_other_labors(df1: pd.DataFrame,
                           df2: pd.DataFrame,
@@ -846,22 +871,15 @@ def labores_ciclicas(df: pd.DataFrame, columna_id: str = 'ID',
 
     return df[columnas_finales]
 "-----------------------------------------------------------------------------------------------------------"
-"""def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
-    df[columna_finca] = pd.Categorical(df[columna_finca], categories=orden_fincas, ordered=True)
-    return df.sort_values(by=[columna_finca, columna_id], ascending=[True, True]).reset_index(drop=True)"""
+def column_replacement(df, nuevas_columnas): 
+    nuevas_columnas = list(nuevas_columnas)
+    if len(nuevas_columnas) != df.shape[1]:
+        raise ValueError(f"Cantidad no coincide: {len(nuevas_columnas)} vs {df.shape[1]}")
+    out = df.copy()
+    out.columns = nuevas_columnas
+    return out
 
-"""def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
-    # Paso 1: ordenar globalmente por ID
-    df = df.sort_values(by=columna_id, ascending=True).copy()
-
-    # Paso 2: crear columna auxiliar con el índice del orden de FINCA
-    finca_to_order = {finca: i for i, finca in enumerate(orden_fincas)}
-    df['FINCA_ORDEN'] = df[columna_finca].map(finca_to_order)
-
-    # Paso 3: ordenar solo por el orden de finca, pero mantener el orden de ID global
-    df = df.sort_values(by='FINCA_ORDEN', kind='stable').drop(columns=['FINCA_ORDEN'])
-
-    return df.reset_index(drop=True)"""
+"-----------------------------------------------------------------------------------------------------------"
 def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
     # Paso 1: crear una columna auxiliar con el orden de la finca
     finca_to_order = {finca: i for i, finca in enumerate(orden_fincas)}
