@@ -880,6 +880,38 @@ def column_replacement(df, nuevas_columnas):
     return out
 
 "-----------------------------------------------------------------------------------------------------------"
+def sum_by_months_parcela(df1, df2, months):
+    # 1) Quita espacios en la lista de meses y en los nombres de columnas
+    months = [str(m).strip() for m in months]
+    df1 = df1.copy(); df2 = df2.copy()
+    df1.columns = df1.columns.map(lambda c: str(c).strip())
+    df2.columns = df2.columns.map(lambda c: str(c).strip())
+
+    # 2) Asegura que existan todas las columnas de months
+    for m in months:
+        if m not in df1.columns: df1[m] = 0.0
+        if m not in df2.columns: df2[m] = 0.0
+
+    # 3) SOLO quitar espacios en celdas de tipo texto (evita usar .str sobre DataFrame)
+    df1[months] = df1[months].apply(
+        lambda s: s.astype(str).str.replace('\u00a0',' ', regex=False).str.strip()
+                  if pd.api.types.is_object_dtype(s) else s
+    )
+    df2[months] = df2[months].apply(
+        lambda s: s.astype(str).str.replace('\u00a0',' ', regex=False).str.strip()
+                  if pd.api.types.is_object_dtype(s) else s
+    )
+
+    # 4) Tu lógica original
+    A = df1[months].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    B = df2[months].apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+    out = df1[["FINCA","LABOR"]].copy()
+    out[months] = A + B
+    return out
+
+
+"-----------------------------------------------------------------------------------------------------------"
 def farm_order_process(df, orden_fincas, columna_finca='FINCA', columna_id='ID'):
     # Paso 1: crear una columna auxiliar con el orden de la finca
     finca_to_order = {finca: i for i, finca in enumerate(orden_fincas)}
