@@ -940,7 +940,36 @@ def farm_order_process_concat(df, orden_fincas, columna_finca='FINCA'):
 
 
 "------------------------------------------------------------------------------------------------------------"
+def reorder_output_materials(df, f_order, value, unit_lists, value_group):
 
+    try:
+        # Crear una columna temporal para el orden
+        df['order'] = df[value].apply(lambda x: f_order.index(x) if x in f_order else len(f_order))
+        
+        # Ordenar el DataFrame basado en la columna temporal
+        df_sorted = df.sort_values('order').drop(columns=['order'])
+        
+        # Log de información sobre la reordenación exitosa
+        logger.info("Reorganización del DataFrame realizada con éxito.")
+
+        data_unit = []
+
+        for unit in unit_lists:
+            final_quantity_unit_filtered = df_sorted[df_sorted[value_group] == unit]
+            data_unit.append(final_quantity_unit_filtered)
+        logger.info("Reorganización de los grupos /unidad realizada con éxito")
+
+        
+        output_ferti_2 = pd.DataFrame(pd.concat(data_unit, ignore_index=True))
+    
+        return output_ferti_2
+    
+    except Exception as e:
+        # Log de la excepción capturada
+        logger.info(f"Ocurrió un error durante la reorganización: {e}")
+        return None
+
+"------------------------------------------------------------------------------------------------------------"
 from datetime import datetime
 from itertools import product
 import pandas as pd
