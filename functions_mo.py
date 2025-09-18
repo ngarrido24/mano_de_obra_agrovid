@@ -65,7 +65,49 @@ def calculate_volume_distribution_factor(
         logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
         raise
 
+"---------------------------------------------------------------------------------------------------"
+def calculate_volume_distribution_gastos(
+    volum_file_emb_subset_def: pd.DataFrame,
+    volum_distribution_subset_def: pd.DataFrame,
+    volum_file_emb_transform_def: pd.DataFrame,  # compat
+    month_columns,  # puede ser list, tuple, np.ndarray o pd.Index
+    factor_series: pd.Series,
+    block_size: int = 46
+) -> pd.DataFrame:
+    try:
+        total = len(volum_file_emb_subset_def)
+        if total % block_size:
+            logger.warning("Filas no múltiplo de %d; se truncará el excedente.", block_size)
+        rows = (total // block_size) * block_size
+        if rows == 0:
+            raise ValueError("No hay filas completas para el tamaño de bloque especificado.")
 
+        if not isinstance(factor_series, pd.Series) or len(factor_series) != rows:
+            raise ValueError(f"factor_series debe ser pd.Series de longitud {rows}.")
+
+        base = volum_file_emb_subset_def.iloc[:rows].astype(float)
+        dist = volum_distribution_subset_def.astype(float)
+
+        sums = dist.sum(axis=1).replace(0, np.nan).to_numpy()         # (meses,)
+        factors = factor_series.to_numpy().reshape(-1, 1)              # (rows,1)
+
+        # (rows x cols) @ (cols x meses) -> (rows x meses)
+        M = base.to_numpy() @ dist.to_numpy().T
+        M = (M / sums) * factors                                       # divide por suma del mes y aplica factor por fila
+        M = np.round(M)                                                 # redondeo hacia arriba
+
+        # Manejo robusto de columnas (evita "truth value of Index is ambiguous")
+        if month_columns is not None and len(month_columns) == dist.shape[0]:
+            cols = list(month_columns)
+        else:
+            cols = list(dist.index)
+
+        out = pd.DataFrame(M, index=base.index, columns=cols)
+        return out
+
+    except Exception as e:
+        logger.error(f"Error durante el cálculo de la distribución de volumen: {e}")
+        raise
 "----------------------------------------------------------------------------------------------------"
 def calculate_volume_distribution_blocks(
     volum_file_emb_subset_def: pd.DataFrame,
@@ -1846,3 +1888,470 @@ def get_ssm_parameter(parameter_name, logger: Logger, ssm_client, with_decryptio
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
         Exception(f"An error occurred: {str(e)}")
+
+"-------------------------------------------------------------------------------------"
+# funciones de gastos de personal
+
+def parametro_1(df: pd.DataFrame, row_factor, ceil: bool=False) -> pd.DataFrame:
+    # Alinear row_factor al índice de df (por posición si no coincide)
+    rf = row_factor if isinstance(row_factor, pd.Series) and row_factor.index.equals(df.index) \
+         else pd.Series(np.asarray(row_factor), index=df.index)
+
+    # Columnas de meses (YYYY-MM)
+    mcols = df.filter(regex=r'^\d{4}-(0[1-9]|1[0-2])$').columns
+    if mcols.empty:
+        raise ValueError("No se encontraron columnas de meses con formato YYYY-MM.")
+
+    out = df.copy()
+    out[mcols] = out[mcols].apply(pd.to_numeric, errors="coerce").mul(rf.to_numpy().reshape(-1,1))
+    if ceil:
+        out[mcols] = np.ceil(out[mcols].to_numpy())
+    return out
+
+"----------------------------------------------------------------------"
+
+import numpy as np
+import pandas as pd
+
+def parametro_2(
+    df: pd.DataFrame,
+    row_factor,                    # pd.Series | array-like de longitud == len(df)
+    months = None                  # lista de meses; si None, detecta YYYY-MM
+) -> pd.DataFrame:
+    if "FINCA" not in df.columns:
+        raise ValueError("Se requiere la columna 'FINCA' en df.")
+    n = len(df)
+    rf = np.asarray(row_factor)
+    if rf.shape[0] != n:
+        raise ValueError(f"row_factor debe tener longitud {n}; recibido {rf.shape[0]}.")
+
+    # Determinar columnas de meses
+    if months is None:
+        mcols = df.filter(regex=r'^\d{4}-(0[1-9]|1[0-2])$').columns.tolist()
+        if not mcols:
+            raise ValueError("No se encontraron columnas de meses con formato YYYY-MM; provee 'months'.")
+    else:
+        mcols = list(months)
+
+    # Construir salida: FINCA + matriz de 1s (float) del mismo shape (n x len(mcols))
+    out = pd.DataFrame(index=df.index)
+    out["FINCA"] = df["FINCA"]
+    out[mcols] = 1.0
+
+    # Multiplicar por fila (cada fila * rf[i])
+    out[mcols] = out[mcols].to_numpy() * rf.reshape(-1, 1)
+
+    return out
+
+
+
+
+
+def parametro_3(df: pd.DataFrame, row_factor, months: list | None = None) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    if "FINCA" not in df.columns: raise ValueError("Se requiere la columna 'FINCA'.")
+
+    n, rf = len(df), np.asarray(row_factor)
+    if rf.shape[0] != n: raise ValueError(f"row_factor debe tener longitud {n}.")
+
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+
+    # Determinar columnas de meses (respeta el orden de 'months' si viene)
+    if months is None:
+        mcols = [c for c in df.columns if pat.match(c)]
+        if not mcols: raise ValueError("No se detectaron columnas YYYY-MM.")
+    else:
+        months = [str(m).strip() for m in months]
+        def find_col(m):
+            if m in df.columns: return m
+            mm = re.match(r'^\d{4}-(\d{2})$', m)
+            if not mm: return None
+            suf = "-" + mm.group(1)
+            for c in df.columns:
+                if pat.match(c) and c.endswith(suf): return c
+            return None
+        mcols = [c for m in months if (c:=find_col(m)) is not None]
+        if not mcols: raise ValueError("Ninguna columna de 'months' está en el DataFrame (tras normalizar).")
+
+    # Mapa MM -> columna (si hay duplicados por año, toma la primera encontrada en mcols)
+    mm2col = {c[-2:]: c for c in mcols}
+
+    out = df[["FINCA"]].copy()
+    out[mcols] = df[mcols].apply(pd.to_numeric, errors="coerce")
+
+    # 0 en: ene, feb, may, jun, jul, sep, oct, nov
+    for mm in ("01","02","05","06","07","09","10","11"):
+        c = mm2col.get(mm)
+        if c: out[c] = 0.0
+
+    # marzo = 45000 * 39
+    if (c := mm2col.get("03")): out[c] = float(45000 * 39)
+
+    # abr, ago, dic = valor df × row_factor (por fila, posición)
+    for mm in ("04","08","12"):
+        if (c := mm2col.get(mm)):
+            out[c] = pd.to_numeric(df[c], errors="coerce").to_numpy() * rf
+
+    return out
+"----------------------------------------------------------------------------------------"
+import numpy as np
+import pandas as pd
+
+import numpy as np
+import pandas as pd
+
+import numpy as np
+import pandas as pd
+import re
+
+def parametro_4(
+    df: pd.DataFrame,
+    row_factor,                       # Serie/array (factor por FILA)
+    month_factors_df: pd.DataFrame,   # DataFrame 1xN con factores por MES
+    ceil: bool = False
+) -> pd.DataFrame:
+    out = df.copy()
+
+    # Alinear row_factor por posición
+    rf = row_factor if isinstance(row_factor, pd.Series) and row_factor.index.equals(out.index) \
+         else pd.Series(np.asarray(row_factor), index=out.index)
+
+    # Detectar columnas de meses: Period[M] o 'YYYY-MM'
+    mcols, mcols_norm = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and c.freqstr == 'M':
+            mcols.append(c); mcols_norm.append(str(c))          # 'YYYY-MM'
+        elif isinstance(c, str) and pat.match(c.strip()):
+            mcols.append(c); mcols_norm.append(c.strip())
+    if not mcols:
+        raise ValueError("No se encontraron columnas de meses (Period[M] o 'YYYY-MM').")
+
+    # Base numérica
+    base = out[mcols].apply(pd.to_numeric, errors="coerce").to_numpy()
+
+    # Factor por fila
+    res = base * rf.to_numpy().reshape(-1, 1)
+
+    # Factor por mes (alineado a mcols_norm)
+    mf = month_factors_df.copy()
+    mf.columns = [str(c).strip() for c in mf.columns]
+    mf_vec = mf.reindex(columns=mcols_norm).iloc[0].to_numpy(dtype=float)
+    if np.isnan(mf_vec).any():
+        falt = [c for c, v in zip(mcols_norm, mf_vec) if pd.isna(v)]
+        raise ValueError(f"month_factors_df no tiene valores para: {falt}")
+    res = res * mf_vec.reshape(1, -1)
+
+    # Ajuste adicional: julio–diciembre  (* 235/230)
+    factor_jd = 235.0 / 230.0
+    jd_idx = [i for i, col in enumerate(mcols_norm) if col.endswith(('-07','-08','-09','-10','-11','-12'))]
+    if jd_idx:
+        res[:, jd_idx] *= factor_jd
+
+    # Ceil opcional
+    if ceil:
+        res = np.ceil(res)
+
+    # Volcar respetando nombres originales (mcols)
+    out[mcols] = res
+    return out
+
+"--------------------------------------------------------------------------------"
+
+import numpy as np
+import pandas as pd
+import re
+
+def parametro_5(
+    df: pd.DataFrame,
+    row_factor,             # Serie/array: factor por FILA
+    factor_a: float,        # ajuste para JUNIO (06) -> base * (rf + A)
+    factor_b: float,        # ajuste para SEPTIEMBRE (09) -> base * (rf + B)
+    factor_c: float,        # ajuste para OCTUBRE (10) -> (base * rf) + C
+    ceil: bool = False,
+    round_to: int | None = None
+) -> pd.DataFrame:
+    out = df.copy()
+
+    # Alinear row_factor por posición
+    rf = row_factor if isinstance(row_factor, pd.Series) and row_factor.index.equals(out.index) \
+         else pd.Series(np.asarray(row_factor), index=out.index)
+
+    # Detectar columnas de meses (Period[M] o 'YYYY-MM')
+    mcols, mm_codes = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and getattr(c, "freqstr", None) == "M":
+            mcols.append(c); mm_codes.append(f"{c.month:02d}")
+        elif isinstance(c, str) and pat.match(c.strip()):
+            s = c.strip(); mcols.append(c); mm_codes.append(s[-2:])
+    if not mcols:
+        raise ValueError("No se encontraron columnas de meses (Period[M] o 'YYYY-MM').")
+
+    base = out[mcols].apply(pd.to_numeric, errors="coerce").to_numpy()
+    rf_np = rf.to_numpy().reshape(-1, 1)
+
+    # Por defecto: base * rf
+    res = base * rf_np
+
+    # Meses especiales
+    for j, mm in enumerate(mm_codes):
+        if mm == "06":      # junio: base * (rf + A)
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_a)
+        elif mm == "09":    # septiembre: base * (rf + B)
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_b)
+        elif mm == "10":    # octubre: (base * rf) + C
+            res[:, j] = (base[:, j] * rf_np.ravel()) + factor_c
+
+    if ceil:
+        res = np.ceil(res)
+    if round_to:
+        res = np.round(res / round_to) * round_to
+
+    out[mcols] = res
+    return out
+
+"--------------------------------------------------------------------------"
+import numpy as np
+import pandas as pd
+import re
+
+def parametro_6(df: pd.DataFrame, row_factor) -> pd.DataFrame:
+    # Copia y normaliza row_factor por posición (acepta escalar o Serie)
+    out = df.copy()
+    if isinstance(row_factor, pd.Series) and row_factor.index.equals(out.index):
+        rf = row_factor.to_numpy()
+    else:
+        rf = np.asarray(row_factor)
+        if rf.ndim == 0:  # escalar
+            rf = np.full(len(out), rf, dtype=float)
+        elif rf.shape[0] != len(out):
+            raise ValueError(f"row_factor debe tener longitud {len(out)}.")
+
+    # Detectar columnas de meses (Period[M] o 'YYYY-MM')
+    mcols, mm_codes = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and getattr(c, "freqstr", None) == "M":
+            mcols.append(c); mm_codes.append(f"{c.month:02d}")
+        elif isinstance(c, str) and pat.match(c.strip()):
+            s = c.strip(); mcols.append(c); mm_codes.append(s[-2:])
+    if not mcols:
+        raise ValueError("No se encontraron columnas de meses (Period[M] o 'YYYY-MM').")
+
+    # Inicializa todos los meses en 0
+    out[mcols] = 0.0
+
+    # Factores constantes
+    k_ene = 8 * 1.39 / 235.0
+    k_dic = 8 * 1.39 / 230.0
+
+    # Aplica enero y diciembre si existen
+    for col, mm in zip(mcols, mm_codes):
+        if mm == "01":  # enero
+            base = pd.to_numeric(df[col], errors="coerce").to_numpy()
+            out[col] = base * rf * k_ene
+        elif mm == "12":  # diciembre
+            base = pd.to_numeric(df[col], errors="coerce").to_numpy()
+            out[col] = base * rf * k_dic
+
+    # Conserva FINCA tal cual
+    if "FINCA" in df.columns:
+        out["FINCA"] = df["FINCA"]
+    else:
+        raise ValueError("Se requiere la columna 'FINCA'.")
+
+    return out
+
+
+
+def parametro_8(df: pd.DataFrame) -> pd.DataFrame:
+    if "FINCA" not in df.columns:
+        raise ValueError("Se requiere la columna 'FINCA'.")
+
+    out = df.copy()
+
+    # Detectar columnas de meses (YYYY-MM o Period[M])
+    mcols, mm_codes = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and getattr(c, "freqstr", None) == "M":
+            mcols.append(c); mm_codes.append(f"{c.month:02d}")
+        elif isinstance(c, str) and pat.match(c.strip()):
+            s = c.strip(); mcols.append(c); mm_codes.append(s[-2:])
+    if not mcols:
+        raise ValueError("No se detectaron columnas de meses (YYYY-MM o Period[M]).")
+
+    # Inicializa meses en 0
+    out[mcols] = 0.0
+
+    # Factores
+    k_mayo = 3 * 50000 * 0.10     # 15000
+    k_agos = 46000
+    k_dic  = 147000
+    const_sep = 30 * 170000       # 5_100_000
+
+    # Aplica reglas por mes si existen
+    for col, mm in zip(mcols, mm_codes):
+        if mm == "05":  # mayo
+            base = pd.to_numeric(df[col], errors="coerce").to_numpy()
+            out[col] = base * k_mayo
+        elif mm == "08":  # agosto
+            base = pd.to_numeric(df[col], errors="coerce").to_numpy()
+            out[col] = base * k_agos
+        elif mm == "09":  # septiembre (constante)
+            out[col] = float(const_sep)
+        elif mm == "12":  # diciembre
+            base = pd.to_numeric(df[col], errors="coerce").to_numpy()
+            out[col] = base * k_dic
+
+    # FINCA se conserva tal cual
+    out["FINCA"] = df["FINCA"]
+    return out
+
+"------------------------------------------------------------------------"
+import numpy as np
+import pandas as pd
+import re
+
+def parametro_9(
+    df: pd.DataFrame,
+    row_factor,             # Serie/array: factor por FILA
+    factor_a: float,        # MARZO (03) -> base * (rf + A)
+    factor_b: float,        # ABRIL (04) -> base * (rf + B)
+    factor_c: float,        # JUNIO (06) -> base * (rf + C)
+    factor_d: float,        # SEPTIEMBRE (09) -> base * (rf + D)
+    ceil: bool = False,
+    round_to: int | None = None
+) -> pd.DataFrame:
+    out = df.copy()
+
+    # Alinear row_factor por posición
+    rf = row_factor if isinstance(row_factor, pd.Series) and row_factor.index.equals(out.index) \
+         else pd.Series(np.asarray(row_factor), index=out.index)
+
+    # Detectar columnas de meses (Period[M] o 'YYYY-MM')
+    mcols, mm_codes = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and getattr(c, "freqstr", None) == "M":
+            mcols.append(c); mm_codes.append(f"{c.month:02d}")
+        elif isinstance(c, str) and pat.match(c.strip()):
+            s = c.strip(); mcols.append(c); mm_codes.append(s[-2:])
+    if not mcols:
+        raise ValueError("No se encontraron columnas de meses (Period[M] o 'YYYY-MM').")
+
+    # Base numérica y factor fila
+    base = out[mcols].apply(pd.to_numeric, errors="coerce").to_numpy()
+    rf_np = rf.to_numpy().reshape(-1, 1)
+
+    # Por defecto: base * rf
+    res = base * rf_np
+
+    # Meses especiales
+    for j, mm in enumerate(mm_codes):
+        if mm == "03":      # marzo
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_a)
+        elif mm == "04":    # abril
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_b)
+        elif mm == "06":    # junio
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_c)
+        elif mm == "09":    # septiembre
+            res[:, j] = base[:, j] * (rf_np.ravel() + factor_d)
+        elif mm == "12":    # diciembre: rf + 60000*3 + 20000
+            res[:, j] = base[:, j] * (rf_np.ravel() + (60000*3 + 20000))
+
+    # Redondeos opcionales
+    if ceil:
+        res = np.ceil(res)
+    if round_to:
+        res = np.round(res / round_to) * round_to
+
+    out[mcols] = res
+    return out
+
+"------------------------------------------------------------------------"
+
+import numpy as np
+import pandas as pd
+import re
+
+def parametro_10(df: pd.DataFrame, row_factor) -> pd.DataFrame:
+    out = df.copy()
+
+    # Alinear row_factor por posición (acepta escalar o Serie)
+    if isinstance(row_factor, pd.Series) and row_factor.index.equals(out.index):
+        rf = row_factor.to_numpy(dtype=float)
+    else:
+        rf = np.asarray(row_factor, dtype=float)
+        if rf.ndim == 0:
+            rf = np.full(len(out), rf, dtype=float)
+        elif rf.shape[0] != len(out):
+            raise ValueError(f"row_factor debe tener longitud {len(out)}.")
+
+    # Detectar columnas de meses (YYYY-MM o Period[M])
+    mcols, mm_codes = [], []
+    pat = re.compile(r'^\d{4}-(0[1-9]|1[0-2])$')
+    for c in out.columns:
+        if isinstance(c, pd.Period) and getattr(c, "freqstr", None) == "M":
+            mcols.append(c); mm_codes.append(f"{c.month:02d}")
+        elif isinstance(c, str) and pat.match(c.strip()):
+            s = c.strip(); mcols.append(c); mm_codes.append(s[-2:])
+    if not mcols:
+        raise ValueError("No se encontraron columnas de meses (Period[M] o 'YYYY-MM').")
+    if "FINCA" not in out.columns:
+        raise ValueError("Se requiere la columna 'FINCA'.")
+
+    base = out[mcols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    rf_col = rf.reshape(-1, 1)
+
+    # Por defecto: df_mes * row_factor
+    res = base * rf_col
+
+    # Marzo: df_mes * (row_factor + 1_300_000*0.20)
+    add_mar = 1_300_000 * 0.20  # 260_000
+    # Diciembre: df_mes * (row_factor + 180_000)
+    add_dic = 180_000
+
+    for j, mm in enumerate(mm_codes):
+        if mm == "03":
+            res[:, j] = base[:, j] * (rf + add_mar)
+        elif mm == "12":
+            res[:, j] = base[:, j] * (rf + add_dic)
+
+    out[mcols] = res
+    return out
+
+    "--------------------------------------------------------------------"
+   
+
+def parametro_11(df: pd.DataFrame, row_factor, ceil: bool=False) -> pd.DataFrame:
+    # Alinear row_factor al índice de df (por posición si no coincide)
+    rf = row_factor if isinstance(row_factor, pd.Series) and row_factor.index.equals(df.index) \
+         else pd.Series(np.asarray(row_factor), index=df.index)
+
+    # Columnas de meses (YYYY-MM)
+    mcols = df.filter(regex=r'^\d{4}-(0[1-9]|1[0-2])$').columns
+    if mcols.empty:
+        raise ValueError("No se encontraron columnas de meses con formato YYYY-MM.")
+
+    out = df.copy()
+    out[mcols] = out[mcols].apply(pd.to_numeric, errors="coerce").mul(rf.to_numpy().reshape(-1,1))
+
+    # Redondeo opcional
+    if ceil:
+        out[mcols] = np.ceil(out[mcols].to_numpy())
+
+    # 🔹 Override para FINCA = ENANO
+    mask_enano = out["FINCA"].astype(str).str.strip().str.upper().eq("ENANO")
+    override_vals = np.array(
+        [531000, 531000, 531000, 531000, 531000, 531000,
+         531000, 531000, 531000, 7058000, 531000, 531000],
+        dtype=float
+    )
+    if len(mcols) != override_vals.size:
+        raise ValueError(f"Se esperaban {len(mcols)} valores para override y llegaron {override_vals.size}.")
+    out.loc[mask_enano, mcols] = override_vals
+
+    return out
