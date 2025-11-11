@@ -1995,15 +1995,6 @@ def parametro_3(df: pd.DataFrame, row_factor, months: list | None = None) -> pd.
 
     return out
 "----------------------------------------------------------------------------------------"
-import numpy as np
-import pandas as pd
-
-import numpy as np
-import pandas as pd
-
-import numpy as np
-import pandas as pd
-import re
 
 def parametro_4(
     df: pd.DataFrame,
