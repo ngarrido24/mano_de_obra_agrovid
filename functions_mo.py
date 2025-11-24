@@ -14,7 +14,6 @@ from itertools import product
 import pandas as pd
 from itertools import product
 import logging
-from unidecode import unidecode
 import unicodedata
 import numpy as np
 
@@ -34,14 +33,17 @@ def calculate_volume_distribution_factor(
     month_columns,
     adjustment_factors  # <- nuevo parámetro
 ):
+    
     try:
         logger.info("Iniciando el cálculo de la matriz de distribución de volumen.")
+
+        total_count = volum_file_emb_transform_def.FINCA.count()
 
         final_data = []
 
         for month in volum_distribution_subset_def.index:
             monthly_result = []
-            for i in range(46):  # 0 a 45 son 46 elementos
+            for i in range(total_count):  # 0 a 45 son 46 elementos
                 result = (volum_file_emb_subset_def.iloc[i, :] * volum_distribution_subset_def.iloc[month, :]).sum()
                 monthly_result.append(result)
             final_data.append(monthly_result)
@@ -71,10 +73,11 @@ def calculate_volume_distribution_gastos(
     volum_distribution_subset_def: pd.DataFrame,
     volum_file_emb_transform_def: pd.DataFrame,  # compat
     month_columns,  # puede ser list, tuple, np.ndarray o pd.Index
-    factor_series: pd.Series,
-    block_size: int = 46
+    factor_series: pd.Series
 ) -> pd.DataFrame:
     try:
+
+        block_size = volum_file_emb_transform_def.FINCA.count()
         total = len(volum_file_emb_subset_def)
         if total % block_size:
             logger.warning("Filas no múltiplo de %d; se truncará el excedente.", block_size)
@@ -509,8 +512,11 @@ def calculate_promediados_factor(
     try:
         logger.info("Iniciando el cálculo de la matriz de distribución de volumen con 92 factores.")
 
-        if len(adjustment_factors) != 92:
-            raise ValueError("La serie de factores debe contener exactamente 92 elementos.")
+        total_count = adjustment_factors.count()
+        total_count_farm = volum_file_emb_transform_def.FINCA.count()
+
+        if len(adjustment_factors) != total_count:
+            raise ValueError(f"La serie de factores debe contener exactamente {total_count} elementos.")
 
         final_data = []
 
@@ -519,13 +525,13 @@ def calculate_promediados_factor(
             monthly_result = []
 
             # Primer bloque (0–45)
-            for i in range(46):
+            for i in range(total_count_farm):
                 factor = adjustment_factors[i]
                 result = (factor * volum_distribution_subset_def.iloc[month, :]).sum()
                 monthly_result.append(result)
 
             # Segundo bloque (46–91)
-            for i in range(46, 92):
+            for i in range(total_count_farm, total_count):
                 factor = adjustment_factors[i]
                 result = (factor * volum_distribution_subset_def.iloc[month, :]).sum()
                 monthly_result.append(result)
@@ -1312,7 +1318,7 @@ def merge_factor_by_id(id_value: int, df_type: pd.DataFrame, df_factor: pd.DataF
     """
     try:
         # Limpieza de tildes en FINCA
-        df_factor.loc[:, 'FINCA'] = df_factor['FINCA'].astype(str).apply(unidecode)
+        #df_factor.loc[:, 'FINCA'] = df_factor['FINCA'].astype(str).apply(unidecode)
 
         # Filtrar por ID
         cut_filtered = df_factor[df_factor['ID'] == id_value]
